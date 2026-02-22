@@ -37,8 +37,9 @@ func main() {
 		printUsage()
 		os.Exit(0)
 	default:
-		// Implicit "new": treat all args as name [identifier]
-		cmdNewFromArgs(args)
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
+		printUsage()
+		os.Exit(1)
 	}
 }
 
@@ -46,14 +47,11 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: workspace <command> [arguments]
 
 Commands:
-  new <name> [identifier]   Create a new worktree + DDEV environment (default)
+  new <name> [identifier]   Create a new worktree + DDEV environment
   remove [name]             Remove a worktree + DDEV environment
-
-If no command is specified, "new" is assumed.
 
 Examples:
   workspace new 0001-new-task
-  workspace 0001-new-task            (same as above)
   workspace new 0001-new-task t1     (custom DDEV identifier)
   workspace remove 0001-new-task     (remove by name)
   workspace remove                   (remove current directory's worktree)
@@ -183,6 +181,11 @@ func cmdRemove(args []string) {
 	}
 
 	targetPath, err = filepath.Abs(targetPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error resolving path: %v\n", err)
+		os.Exit(1)
+	}
+	targetPath, err = filepath.EvalSymlinks(targetPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving path: %v\n", err)
 		os.Exit(1)

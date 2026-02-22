@@ -6,14 +6,11 @@ The idea is that when I want to work on a new task, I will run this script to cr
 
 ## Subcommands
 
-The tool supports two subcommands. If the first argument is not a recognized subcommand, `new` is assumed.
+The tool supports two subcommands. If the first argument is not a recognized subcommand, usage help is shown and the tool exits.
 
 ### `workspace new <name> [identifier]`
 
-Creates a new worktree + DDEV environment. This is the default subcommand.
-
-- `workspace new <name> [identifier]` — explicit form
-- `workspace <name> [identifier]` — implicit `new`
+Creates a new worktree + DDEV environment.
 
 #### Parameters
 

@@ -1,20 +1,58 @@
 # Workspace Manager
 
-This script allows a user to setup a new Git worktree inside a project folder. It will base the worktree on the current branch. It requires one argument, which is the branch name that will be checked out in the worktree.
+A CLI tool for managing git worktree-based workspaces. It uses a bare-clone model where all worktrees live inside a `spaces/` directory, keeping your project organized.
 
-## Operations
+## Project Structure
 
-This script does the following (in this order):
+```
+myproject/
+  .bare/              <- bare git repo (object store)
+  .git                <- file containing "gitdir: .bare"
+  spaces/
+    main/             <- worktree (default branch)
+    0001-new-task/    <- worktree (feature branch)
+```
 
-1) creates a new git worktree based on the branch name provided in the first argument.
-2) alter the DDEV config name value to be unique. Without a second argument, it will take the first 4 characters of your new branch name.
-3) It will look for tmp/db.sql.gz and if it finds it, will automatically import it into your DDEV environment. If it can't find it, it will prompt you to provide a DB backup file location or skip this.
+## Commands
+
+### `workspace init <git-remote-url>`
+
+Bootstrap a new project from a git remote:
+
+```
+workspace init git@github.com:user/project.git
+```
+
+This clones the repo as a bare repository, sets up the `spaces/` directory structure, and creates a worktree for the default branch. If the project uses DDEV, it will be started automatically.
+
+### `workspace new <name> [identifier]`
+
+Create a new worktree (and optionally a DDEV environment):
+
+```
+workspace new 0001-new-task
+workspace new 0001-new-task t1     # custom DDEV identifier
+```
+
+Works from anywhere inside the project. Creates a new branch and worktree under `spaces/`. If DDEV is configured, the project is cloned with a unique name and started.
+
+### `workspace remove [name]`
+
+Remove a worktree (and its DDEV environment if present):
+
+```
+workspace remove 0001-new-task     # remove by name
+workspace remove                   # remove current directory's worktree
+```
 
 ## Compile
 
-Requirements: - Go v1.21+
+Requirements: Go v1.21+
 
-Compilation: go build -o workspace main.go (or just go build)
+```
+go build -o workspace main.go
+```
 
-# Installation
-Be sure to symlink the binary produced (workspace) into your $PATH. Or just add this folder to your $PATH directly.
+## Installation
+
+Symlink the compiled `workspace` binary into your `$PATH`, or add this folder to your `$PATH` directly.

@@ -16,6 +16,7 @@ type StepResult struct {
 
 type cleanupState struct {
 	worktreePath    string
+	projectRoot     string
 	worktreeCreated bool
 	ddevStarted     bool
 }
@@ -29,10 +30,12 @@ func main() {
 	}
 
 	switch args[0] {
-	case "remove":
-		cmdRemove(args[1:])
+	case "init":
+		cmdInit(args[1:])
 	case "new":
 		cmdNewFromArgs(args[1:])
+	case "remove":
+		cmdRemove(args[1:])
 	case "--help", "-h":
 		printUsage()
 		os.Exit(0)
@@ -47,10 +50,12 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: workspace <command> [arguments]
 
 Commands:
-  new <name> [identifier]   Create a new worktree + DDEV environment
-  remove [name]             Remove a worktree + DDEV environment
+  init <git-remote-url>    Clone a repo into a bare-clone workspace structure
+  new <name> [identifier]  Create a new worktree + DDEV environment
+  remove [name]            Remove a worktree + DDEV environment
 
 Examples:
+  workspace init git@github.com:user/project.git
   workspace new 0001-new-task
   workspace new 0001-new-task t1     (custom DDEV identifier)
   workspace remove 0001-new-task     (remove by name)
@@ -58,10 +63,257 @@ Examples:
 `)
 }
 
+// findProjectRoot locates the project root from anywhere inside the project
+// (worktree, project root, etc.) by finding the shared git directory.
+func findProjectRoot() (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("not inside a git repository: %w", err)
+	}
+
+	gitCommonDir := strings.TrimSpace(string(out))
+
+	// Resolve to absolute path if relative
+	if !filepath.IsAbs(gitCommonDir) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("could not get working directory: %w", err)
+		}
+		gitCommonDir = filepath.Join(cwd, gitCommonDir)
+	}
+
+	gitCommonDir, err = filepath.Abs(gitCommonDir)
+	if err != nil {
+		return "", fmt.Errorf("could not resolve path: %w", err)
+	}
+
+	projectRoot := filepath.Dir(gitCommonDir)
+
+	// Validate that .bare or .git exists at project root
+	if _, err := os.Stat(filepath.Join(projectRoot, ".bare")); err == nil {
+		return projectRoot, nil
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, ".git")); err == nil {
+		return projectRoot, nil
+	}
+
+	return "", fmt.Errorf("could not find project root (no .bare or .git at %s)", projectRoot)
+}
+
+// extractProjectName extracts the project name from a git remote URL.
+func extractProjectName(remoteURL string) string {
+	remoteURL = strings.TrimRight(remoteURL, "/")
+	name := filepath.Base(remoteURL)
+	name = strings.TrimSuffix(name, ".git")
+	return name
+}
+
+func cmdInit(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintf(os.Stderr, "Error: expected 1 argument (git remote URL), got %d\n", len(args))
+		fmt.Fprintf(os.Stderr, "Usage: workspace init <git-remote-url>\n")
+		os.Exit(1)
+	}
+
+	remoteURL := args[0]
+	projectName := extractProjectName(remoteURL)
+	if projectName == "" {
+		fmt.Fprintf(os.Stderr, "Error: could not extract project name from URL: %s\n", remoteURL)
+		os.Exit(1)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	projectDir := filepath.Join(cwd, projectName)
+
+	// Check if project directory already exists
+	if _, err := os.Stat(projectDir); err == nil {
+		fmt.Fprintf(os.Stderr, "Error: directory already exists: %s\n", projectDir)
+		os.Exit(1)
+	}
+
+	var steps []StepResult
+
+	// Step 1: Create project directory
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating project directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Step 2: Bare clone
+	fmt.Println("--- Cloning repository (bare) ---")
+	barePath := filepath.Join(projectDir, ".bare")
+	cloneCmd := exec.Command("git", "clone", "--bare", remoteURL, barePath)
+	cloneCmd.Stdout = os.Stdout
+	cloneCmd.Stderr = os.Stderr
+	if err := cloneCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error cloning repository: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	steps = append(steps, StepResult{
+		Description: "Cloned repository (bare)",
+		Detail:      barePath,
+	})
+
+	// Step 3: Write .git file
+	gitFilePath := filepath.Join(projectDir, ".git")
+	if err := os.WriteFile(gitFilePath, []byte("gitdir: .bare\n"), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing .git file: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	steps = append(steps, StepResult{
+		Description: "Created .git file",
+		Detail:      gitFilePath,
+	})
+
+	// Step 4: Reconfigure fetch refspec
+	configCmd := exec.Command("git", "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	configCmd.Dir = projectDir
+	if err := configCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error configuring fetch refspec: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n--- Fetching branches ---")
+	fetchCmd := exec.Command("git", "fetch", "origin")
+	fetchCmd.Dir = projectDir
+	fetchCmd.Stdout = os.Stdout
+	fetchCmd.Stderr = os.Stderr
+	if err := fetchCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error fetching from origin: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	steps = append(steps, StepResult{
+		Description: "Configured fetch refspec",
+		Detail:      "Fetched all branches",
+	})
+
+	// Step 5: Detect default branch
+	defaultBranch := detectDefaultBranch(projectDir)
+	if defaultBranch == "" {
+		fmt.Fprintf(os.Stderr, "Error: could not detect default branch\n")
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	steps = append(steps, StepResult{
+		Description: "Default branch",
+		Detail:      defaultBranch,
+	})
+
+	// Step 6: Create spaces/ directory and first worktree
+	spacesDir := filepath.Join(projectDir, "spaces")
+	if err := os.MkdirAll(spacesDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating spaces directory: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n--- Creating worktree ---")
+	wtPath := filepath.Join("spaces", defaultBranch)
+	wtCmd := exec.Command("git", "worktree", "add", wtPath, defaultBranch)
+	wtCmd.Dir = projectDir
+	wtCmd.Stdout = os.Stdout
+	wtCmd.Stderr = os.Stderr
+	if err := wtCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	worktreeFullPath := filepath.Join(projectDir, "spaces", defaultBranch)
+	steps = append(steps, StepResult{
+		Description: "Created worktree",
+		Detail:      worktreeFullPath,
+	})
+
+	// Step 7: Check for DDEV and optionally set it up
+	ddevConfig := filepath.Join(worktreeFullPath, ".ddev", "config.yaml")
+	if _, err := os.Stat(ddevConfig); err == nil {
+		fmt.Println("\n--- Starting DDEV ---")
+		if err := runCommandLive(worktreeFullPath, "ddev", "start"); err != nil {
+			fmt.Fprintf(os.Stderr, "\nWarning: failed to start DDEV: %v\n", err)
+			steps = append(steps, StepResult{
+				Description: "DDEV",
+				Detail:      fmt.Sprintf("Failed to start: %v", err),
+			})
+		} else {
+			steps = append(steps, StepResult{
+				Description: "DDEV",
+				Detail:      "Started",
+			})
+
+			dbDetail, err := handleDBImport(worktreeFullPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\nWarning: failed to import database: %v\n", err)
+				steps = append(steps, StepResult{
+					Description: "Database",
+					Detail:      fmt.Sprintf("Failed: %v", err),
+				})
+			} else {
+				steps = append(steps, StepResult{
+					Description: "Database",
+					Detail:      dbDetail,
+				})
+			}
+		}
+	} else {
+		steps = append(steps, StepResult{
+			Description: "DDEV",
+			Detail:      "Skipped (no .ddev/config.yaml found)",
+		})
+	}
+
+	// Done
+	fmt.Println()
+	printSummary(steps)
+}
+
+func detectDefaultBranch(projectDir string) string {
+	// Try symbolic-ref first
+	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd.Dir = projectDir
+	out, err := cmd.Output()
+	if err == nil {
+		ref := strings.TrimSpace(string(out))
+		branch := strings.TrimPrefix(ref, "refs/remotes/origin/")
+		if branch != ref {
+			return branch
+		}
+	}
+
+	// Fall back to checking for main, then master
+	for _, branch := range []string{"main", "master"} {
+		cmd := exec.Command("git", "rev-parse", "--verify", "refs/remotes/origin/"+branch)
+		cmd.Dir = projectDir
+		if err := cmd.Run(); err == nil {
+			return branch
+		}
+	}
+
+	return ""
+}
+
+func cleanupInit(projectDir string) {
+	fmt.Fprintf(os.Stderr, "\n--- Cleaning up ---\n")
+	fmt.Fprintf(os.Stderr, "Removing project directory %s...\n", projectDir)
+	if err := os.RemoveAll(projectDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove project directory: %v\n", err)
+	}
+	fmt.Fprintf(os.Stderr, "Cleanup complete.\n")
+}
+
 func cmdNewFromArgs(args []string) {
 	if len(args) < 1 || len(args) > 2 {
 		fmt.Fprintf(os.Stderr, "Error: expected 1 or 2 arguments, got %d\n", len(args))
-		fmt.Fprintf(os.Stderr, "Usage: workspace [new] <worktree-name> [identifier]\n")
+		fmt.Fprintf(os.Stderr, "Usage: workspace new <worktree-name> [identifier]\n")
 		os.Exit(1)
 	}
 
@@ -86,30 +338,28 @@ func cmdNewFromArgs(args []string) {
 }
 
 func cmdNew(worktreeName, identifier string) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	worktreePath := filepath.Join(cwd, "..", worktreeName)
-	state := &cleanupState{worktreePath: worktreePath}
-	var steps []StepResult
-
-	// Step 1: Read current DDEV project name
-	originalName, err := getDDEVProjectName(cwd)
+	projectRoot, err := findProjectRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Make sure you're in a DDEV project directory.\n")
 		os.Exit(1)
 	}
-	steps = append(steps, StepResult{
-		Description: "Read DDEV project name",
-		Detail:      originalName,
-	})
+
+	worktreePath := filepath.Join(projectRoot, "spaces", worktreeName)
+	state := &cleanupState{worktreePath: worktreePath, projectRoot: projectRoot}
+	var steps []StepResult
+
+	// Step 1: Read current DDEV project name (from any existing worktree)
+	originalName, err := findDDEVProjectName(projectRoot)
+	hasDDEV := err == nil
+	if hasDDEV {
+		steps = append(steps, StepResult{
+			Description: "Read DDEV project name",
+			Detail:      originalName,
+		})
+	}
 
 	// Step 2: Create git worktree
-	err = createWorktree(worktreeName)
+	err = createWorktree(projectRoot, worktreeName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
 		cleanup(state)
@@ -120,6 +370,16 @@ func cmdNew(worktreeName, identifier string) {
 		Description: "Created git worktree",
 		Detail:      worktreeName,
 	})
+
+	if !hasDDEV {
+		steps = append(steps, StepResult{
+			Description: "DDEV",
+			Detail:      "Skipped (no .ddev/config.yaml found in any worktree)",
+		})
+		fmt.Println()
+		printSummary(steps)
+		return
+	}
 
 	// Step 3: Rename DDEV project
 	newName := identifier + "-" + originalName
@@ -165,19 +425,55 @@ func cmdNew(worktreeName, identifier string) {
 	printSummary(steps)
 }
 
-func cmdRemove(args []string) {
+// findDDEVProjectName searches for a DDEV config in existing worktrees.
+// It prefers the current working directory, then falls back to the first
+// worktree in spaces/ that has .ddev/config.yaml.
+func findDDEVProjectName(projectRoot string) (string, error) {
+	// First check cwd
 	cwd, err := os.Getwd()
+	if err == nil {
+		if name, err := getDDEVProjectName(cwd); err == nil {
+			return name, nil
+		}
+	}
+
+	// Scan spaces/ for any worktree with DDEV config
+	spacesDir := filepath.Join(projectRoot, "spaces")
+	entries, err := os.ReadDir(spacesDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+		return "", fmt.Errorf("could not read spaces directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(spacesDir, entry.Name())
+		if name, err := getDDEVProjectName(dir); err == nil {
+			return name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no DDEV config found in any worktree")
+}
+
+func cmdRemove(args []string) {
+	projectRoot, err := findProjectRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Determine target directory
 	var targetPath string
 	if len(args) > 0 && args[0] != "" {
-		targetPath = filepath.Join(cwd, "..", args[0])
+		targetPath = filepath.Join(projectRoot, "spaces", args[0])
 	} else {
-		targetPath = cwd
+		targetPath, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	targetPath, err = filepath.Abs(targetPath)
@@ -192,7 +488,7 @@ func cmdRemove(args []string) {
 	}
 
 	// Validate it's a git worktree
-	branchName, mainWorktree, err := validateWorktree(targetPath)
+	branchName, err := validateWorktree(targetPath, projectRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -202,7 +498,7 @@ func cmdRemove(args []string) {
 	fmt.Println("The following will be destroyed:")
 	fmt.Printf("  Worktree:  %s\n", targetPath)
 	fmt.Printf("  Branch:    %s\n", branchName)
-	fmt.Printf("  DDEV project in that worktree\n")
+	fmt.Printf("  DDEV project in that worktree (if any)\n")
 	fmt.Print("\nAre you sure? (y/N) ")
 
 	reader := bufio.NewReader(os.Stdin)
@@ -219,29 +515,37 @@ func cmdRemove(args []string) {
 
 	var steps []StepResult
 
-	// Step 1: Delete DDEV
-	fmt.Println("\n--- Deleting DDEV project ---")
-	ddevCmd := exec.Command("ddev", "delete", "--omit-snapshot", "-y")
-	ddevCmd.Dir = targetPath
-	ddevCmd.Stdout = os.Stdout
-	ddevCmd.Stderr = os.Stderr
-	if err := ddevCmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to delete DDEV project: %v\n", err)
-		steps = append(steps, StepResult{
-			Description: "DDEV project",
-			Detail:      fmt.Sprintf("Failed to delete: %v", err),
-		})
+	// Step 1: Delete DDEV (if present)
+	ddevConfig := filepath.Join(targetPath, ".ddev", "config.yaml")
+	if _, err := os.Stat(ddevConfig); err == nil {
+		fmt.Println("\n--- Deleting DDEV project ---")
+		ddevCmd := exec.Command("ddev", "delete", "--omit-snapshot", "-y")
+		ddevCmd.Dir = targetPath
+		ddevCmd.Stdout = os.Stdout
+		ddevCmd.Stderr = os.Stderr
+		if err := ddevCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to delete DDEV project: %v\n", err)
+			steps = append(steps, StepResult{
+				Description: "DDEV project",
+				Detail:      fmt.Sprintf("Failed to delete: %v", err),
+			})
+		} else {
+			steps = append(steps, StepResult{
+				Description: "DDEV project",
+				Detail:      "Deleted",
+			})
+		}
 	} else {
 		steps = append(steps, StepResult{
 			Description: "DDEV project",
-			Detail:      "Deleted",
+			Detail:      "Skipped (no .ddev/config.yaml)",
 		})
 	}
 
-	// Step 2: Remove git worktree (run from the main repo)
+	// Step 2: Remove git worktree (run from the project root)
 	fmt.Println("\n--- Removing git worktree ---")
 	wtCmd := exec.Command("git", "worktree", "remove", "--force", targetPath)
-	wtCmd.Dir = mainWorktree
+	wtCmd.Dir = projectRoot
 	wtCmd.Stdout = os.Stdout
 	wtCmd.Stderr = os.Stderr
 	if err := wtCmd.Run(); err != nil {
@@ -256,7 +560,7 @@ func cmdRemove(args []string) {
 	// Step 3: Delete the branch
 	fmt.Println("\n--- Deleting branch ---")
 	branchCmd := exec.Command("git", "branch", "-D", branchName)
-	branchCmd.Dir = mainWorktree
+	branchCmd.Dir = projectRoot
 	branchCmd.Stdout = os.Stdout
 	branchCmd.Stderr = os.Stderr
 	if err := branchCmd.Run(); err != nil {
@@ -283,33 +587,34 @@ func cmdRemove(args []string) {
 }
 
 // validateWorktree checks that targetPath is a git worktree and returns its
-// branch name and the path to the main worktree (the primary repo checkout).
-func validateWorktree(targetPath string) (branch string, mainWorktree string, err error) {
+// branch name. It runs git commands from projectRoot and skips bare repo entries.
+func validateWorktree(targetPath, projectRoot string) (branch string, err error) {
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = projectRoot
 	out, err := cmd.Output()
 	if err != nil {
-		return "", "", fmt.Errorf("failed to list worktrees: %w", err)
+		return "", fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
 	var currentWorktree string
-	firstWorktree := true
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "worktree ") {
 			currentWorktree = strings.TrimPrefix(line, "worktree ")
-			if firstWorktree {
-				mainWorktree = currentWorktree
-				firstWorktree = false
-			}
+		}
+		// Skip bare repo entries
+		if line == "bare" {
+			currentWorktree = ""
+			continue
 		}
 		if strings.HasPrefix(line, "branch ") && currentWorktree == targetPath {
 			ref := strings.TrimPrefix(line, "branch ")
 			// Strip "refs/heads/" prefix to get the short branch name
 			branch = strings.TrimPrefix(ref, "refs/heads/")
-			return branch, mainWorktree, nil
+			return branch, nil
 		}
 	}
 
-	return "", "", fmt.Errorf("%s is not a git worktree", targetPath)
+	return "", fmt.Errorf("%s is not a git worktree", targetPath)
 }
 
 func getDDEVProjectName(dir string) (string, error) {
@@ -334,8 +639,15 @@ func getDDEVProjectName(dir string) (string, error) {
 	return "", fmt.Errorf("no 'name:' field found in %s", configPath)
 }
 
-func createWorktree(name string) error {
-	cmd := exec.Command("git", "worktree", "add", "-b", name, filepath.Join("..", name))
+func createWorktree(projectRoot, name string) error {
+	// Ensure spaces/ directory exists
+	spacesDir := filepath.Join(projectRoot, "spaces")
+	if err := os.MkdirAll(spacesDir, 0755); err != nil {
+		return fmt.Errorf("could not create spaces directory: %w", err)
+	}
+
+	cmd := exec.Command("git", "worktree", "add", "-b", name, filepath.Join("spaces", name))
+	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -449,6 +761,7 @@ func cleanup(state *cleanupState) {
 	if state.worktreeCreated {
 		fmt.Fprintf(os.Stderr, "Removing git worktree...\n")
 		cmd := exec.Command("git", "worktree", "remove", "--force", state.worktreePath)
+		cmd.Dir = state.projectRoot
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {

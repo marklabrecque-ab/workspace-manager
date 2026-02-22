@@ -418,18 +418,27 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		return
 	}
 
-	// Step 3: Rename DDEV project
-	newName := identifier + "-" + originalName
-	err = renameDDEVProject(worktreePath, identifier, originalName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error renaming DDEV project: %v\n", err)
-		cleanup(state)
-		os.Exit(1)
+	// Step 3: Rename DDEV project (skip for main/master — keep default name)
+	isDefaultBranch := worktreeName == "main" || worktreeName == "master"
+	ddevName := originalName
+	if !isDefaultBranch {
+		ddevName = identifier + "-" + originalName
+		err = renameDDEVProject(worktreePath, identifier, originalName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error renaming DDEV project: %v\n", err)
+			cleanup(state)
+			os.Exit(1)
+		}
+		steps = append(steps, StepResult{
+			Description: "Renamed DDEV project",
+			Detail:      ddevName,
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "DDEV project name",
+			Detail:      originalName + " (kept default)",
+		})
 	}
-	steps = append(steps, StepResult{
-		Description: "Renamed DDEV project",
-		Detail:      newName,
-	})
 
 	// Step 4: Start DDEV
 	fmt.Println("\n--- Starting DDEV ---")
@@ -442,7 +451,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 	state.ddevStarted = true
 	steps = append(steps, StepResult{
 		Description: "Started DDEV",
-		Detail:      newName,
+		Detail:      ddevName,
 	})
 
 	// Step 5: Handle DB import

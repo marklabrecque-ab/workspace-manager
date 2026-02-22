@@ -217,10 +217,16 @@ func cmdInit(args []string) {
 		Detail:      defaultBranch,
 	})
 
-	// Step 6: Create spaces/ directory and first worktree
+	// Step 6: Create spaces/ and db/ directories, then first worktree
 	spacesDir := filepath.Join(projectDir, "spaces")
 	if err := os.MkdirAll(spacesDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating spaces directory: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	dbDir := filepath.Join(projectDir, "db")
+	if err := os.MkdirAll(dbDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating db directory: %v\n", err)
 		cleanupInit(projectDir)
 		os.Exit(1)
 	}
@@ -258,7 +264,7 @@ func cmdInit(args []string) {
 				Detail:      "Started",
 			})
 
-			dbDetail, err := handleDBImport(worktreeFullPath)
+			dbDetail, err := handleDBImport(worktreeFullPath, projectDir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "\nWarning: failed to import database: %v\n", err)
 				steps = append(steps, StepResult{
@@ -455,7 +461,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 	})
 
 	// Step 5: Handle DB import
-	dbDetail, err := handleDBImport(worktreePath)
+	dbDetail, err := handleDBImport(worktreePath, projectRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nError importing database: %v\n", err)
 		cleanup(state)
@@ -737,8 +743,8 @@ func runCommandLive(dir, name string, args ...string) error {
 	return cmd.Run()
 }
 
-func handleDBImport(worktreePath string) (string, error) {
-	defaultPath := filepath.Join(worktreePath, "tmp", "db.sql.gz")
+func handleDBImport(worktreePath, projectRoot string) (string, error) {
+	defaultPath := filepath.Join(projectRoot, "db", "db.sql.gz")
 
 	if _, err := os.Stat(defaultPath); err == nil {
 		fmt.Printf("\nFound database dump at %s\n", defaultPath)
@@ -752,7 +758,7 @@ func handleDBImport(worktreePath string) (string, error) {
 
 	// Prompt user
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("\nNo database dump found at tmp/db.sql.gz\n")
+	fmt.Print("\nNo database dump found at db/db.sql.gz\n")
 	fmt.Print("Enter path to database dump (or press Enter to skip): ")
 	input, err := reader.ReadString('\n')
 	if err != nil {

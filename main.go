@@ -628,6 +628,24 @@ func cmdRemove(args []string) {
 		})
 	}
 
+	// Step 4: Prune Docker build cache
+	fmt.Println("\n--- Pruning Docker build cache ---")
+	pruneCmd := exec.Command("docker", "builder", "prune", "-f")
+	pruneCmd.Stdout = os.Stdout
+	pruneCmd.Stderr = os.Stderr
+	if err := pruneCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to prune Docker build cache: %v\n", err)
+		steps = append(steps, StepResult{
+			Description: "Docker build cache",
+			Detail:      fmt.Sprintf("Failed to prune: %v", err),
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Docker build cache",
+			Detail:      "Pruned",
+		})
+	}
+
 	// Summary
 	fmt.Println()
 	fmt.Println("=== Workspace Removal Complete ===")

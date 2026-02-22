@@ -51,14 +51,16 @@ func printUsage() {
 
 Commands:
   init <url> [folder]     Clone a repo into a bare-clone workspace structure
-  new <name> [identifier]  Create a new worktree + DDEV environment
+  new [--base <branch>] <name> [identifier]
+                           Create a new worktree + DDEV environment
   remove [name]            Remove a worktree + DDEV environment
 
 Examples:
   workspace init git@github.com:user/project.git
   workspace init git@github.com:user/project.git myproject
   workspace new 0001-new-task
-  workspace new 0001-new-task t1     (custom DDEV identifier)
+  workspace new 0001-new-task t1              (custom DDEV identifier)
+  workspace new --base develop 0001-new-task  (branch off develop)
   workspace remove 0001-new-task     (remove by name)
   workspace remove                   (remove current directory's worktree)
 `)
@@ -317,21 +319,40 @@ func cleanupInit(projectDir string) {
 }
 
 func cmdNewFromArgs(args []string) {
-	if len(args) < 1 || len(args) > 2 {
-		fmt.Fprintf(os.Stderr, "Error: expected 1 or 2 arguments, got %d\n", len(args))
-		fmt.Fprintf(os.Stderr, "Usage: workspace new <worktree-name> [identifier]\n")
+	var baseBranch string
+	var positional []string
+
+	// Parse flags
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--base" {
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "Error: --base requires a branch name\n")
+				os.Exit(1)
+			}
+			baseBranch = args[i+1]
+			i++ // skip the value
+		} else if strings.HasPrefix(args[i], "--base=") {
+			baseBranch = strings.TrimPrefix(args[i], "--base=")
+		} else {
+			positional = append(positional, args[i])
+		}
+	}
+
+	if len(positional) < 1 || len(positional) > 2 {
+		fmt.Fprintf(os.Stderr, "Error: expected 1 or 2 positional arguments, got %d\n", len(positional))
+		fmt.Fprintf(os.Stderr, "Usage: workspace new [--base <branch>] <worktree-name> [identifier]\n")
 		os.Exit(1)
 	}
 
-	worktreeName := args[0]
+	worktreeName := positional[0]
 	if worktreeName == "" {
 		fmt.Fprintf(os.Stderr, "Error: worktree name cannot be empty\n")
 		os.Exit(1)
 	}
 
 	var identifier string
-	if len(args) == 2 {
-		identifier = args[1]
+	if len(positional) == 2 {
+		identifier = positional[1]
 	} else {
 		if len(worktreeName) < 4 {
 			identifier = worktreeName
@@ -340,14 +361,24 @@ func cmdNewFromArgs(args []string) {
 		}
 	}
 
-	cmdNew(worktreeName, identifier)
+	cmdNew(worktreeName, identifier, baseBranch)
 }
 
-func cmdNew(worktreeName, identifier string) {
+func cmdNew(worktreeName, identifier, baseBranch string) {
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Validate base branch exists if specified
+	if baseBranch != "" {
+		cmd := exec.Command("git", "rev-parse", "--verify", baseBranch)
+		cmd.Dir = projectRoot
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: branch %q does not exist\n", baseBranch)
+			os.Exit(1)
+		}
 	}
 
 	worktreePath := filepath.Join(projectRoot, "spaces", worktreeName)
@@ -365,7 +396,7 @@ func cmdNew(worktreeName, identifier string) {
 	}
 
 	// Step 2: Create git worktree
-	err = createWorktree(projectRoot, worktreeName)
+	err = createWorktree(projectRoot, worktreeName, baseBranch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
 		cleanup(state)
@@ -645,14 +676,18 @@ func getDDEVProjectName(dir string) (string, error) {
 	return "", fmt.Errorf("no 'name:' field found in %s", configPath)
 }
 
-func createWorktree(projectRoot, name string) error {
+func createWorktree(projectRoot, name, baseBranch string) error {
 	// Ensure spaces/ directory exists
 	spacesDir := filepath.Join(projectRoot, "spaces")
 	if err := os.MkdirAll(spacesDir, 0755); err != nil {
 		return fmt.Errorf("could not create spaces directory: %w", err)
 	}
 
-	cmd := exec.Command("git", "worktree", "add", "-b", name, filepath.Join("spaces", name))
+	gitArgs := []string{"worktree", "add", "-b", name, filepath.Join("spaces", name)}
+	if baseBranch != "" {
+		gitArgs = append(gitArgs, baseBranch)
+	}
+	cmd := exec.Command("git", gitArgs...)
 	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

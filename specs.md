@@ -47,7 +47,7 @@ Bootstraps a new project from a git remote URL using the bare-clone worktree mod
 
 If any step fails, the entire project directory is removed.
 
-### `workspace new <name> [identifier]`
+### `workspace new [--base <branch>] <name> [identifier]`
 
 Creates a new worktree + DDEV environment.
 
@@ -55,10 +55,14 @@ Creates a new worktree + DDEV environment.
 
 1) A required string, which will create:
   - a new git worktree named by the string under `spaces/`
-  - a new branch named by the string, based on the current branch checked out in the project
+  - a new branch named by the string, based on the current HEAD (or the branch specified by `--base`)
   - the new git worktree checks out this new branch
 
 2) An optional string to override the DDEV identifier used when renaming the project
+
+#### Options
+
+- `--base <branch>` — Create the new branch starting from `<branch>` instead of the current HEAD. The branch must exist; if it doesn't, the command fails with an error.
 
 #### Behavior
 

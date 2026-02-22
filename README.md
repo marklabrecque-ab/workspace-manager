@@ -26,16 +26,17 @@ workspace init git@github.com:user/project.git myproject   # custom folder name
 
 This clones the repo as a bare repository, sets up the `spaces/` directory structure, and creates a worktree for the default branch. If the project uses DDEV, it will be started automatically.
 
-### `workspace new <name> [identifier]`
+### `workspace new [--base <branch>] <name> [identifier]`
 
 Create a new worktree (and optionally a DDEV environment):
 
 ```
 workspace new 0001-new-task
-workspace new 0001-new-task t1     # custom DDEV identifier
+workspace new 0001-new-task t1              # custom DDEV identifier
+workspace new --base develop 0001-new-task  # branch off develop
 ```
 
-Works from anywhere inside the project. Creates a new branch and worktree under `spaces/`. If DDEV is configured, the project is cloned with a unique name and started.
+Works from anywhere inside the project. Creates a new branch and worktree under `spaces/`. Use `--base` to branch from a specific branch instead of the current HEAD. If DDEV is configured, the project is cloned with a unique name and started.
 
 ### `workspace remove [name]`
 

@@ -34,7 +34,7 @@ func main() {
     os.Exit(1)
   }
 
-  worktreePath := filepath.Join(cwd, worktreeName)
+  worktreePath := filepath.Join(cwd, "..", worktreeName)
   state := &cleanupState{worktreePath: worktreePath}
   var steps []StepResult
 
@@ -154,7 +154,7 @@ func getDDEVProjectName(dir string) (string, error) {
 }
 
 func createWorktree(name string) error {
-  cmd := exec.Command("git", "worktree", "add", "-b", name, name)
+  cmd := exec.Command("git", "worktree", "add", "-b", name, filepath.Join("..", name))
   cmd.Stdout = os.Stdout
   cmd.Stderr = os.Stderr
   return cmd.Run()

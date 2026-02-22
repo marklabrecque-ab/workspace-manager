@@ -17,6 +17,8 @@ This script should accept a couple parameters:
 
 ## Functionality
 
+The git worktree should be created as a sibling directory to the current project, not nested inside it. For example, if the project lives at `/home/mark/myproject` and the worktree name is `0001-new-task`, the worktree should be created at `/home/mark/0001-new-task` (i.e. `../<worktree-name>` relative to the project root).
+
 When creating a new git worktree, the script should also change the DDEV project name to be able to give it a unique identifier. By default, it should take the first 4 characters of the first parameter accepted by the string. If a second parameter is provided, use that instead. It should take the existing DDEV project name and prefix it with the identifier, separated by a dash. So if I run the command `workspace 0001-new-task` it should create the git worktree within a folder named 0001-new-task and the DDEV project name should be changed to 0001-project (where project was the original DDEV name).
 
 Once the gitwork tree has been created and the name has been edited, change directory into this folder and then run `ddev start` to start the environment.

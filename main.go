@@ -192,7 +192,7 @@ func cmdRemove(args []string) {
 	}
 
 	// Validate it's a git worktree
-	branchName, err := validateWorktree(targetPath)
+	branchName, mainWorktree, err := validateWorktree(targetPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -238,11 +238,10 @@ func cmdRemove(args []string) {
 		})
 	}
 
-	// Step 2: Remove git worktree (run from outside the worktree)
+	// Step 2: Remove git worktree (run from the main repo)
 	fmt.Println("\n--- Removing git worktree ---")
-	mainRepo := filepath.Dir(targetPath)
 	wtCmd := exec.Command("git", "worktree", "remove", "--force", targetPath)
-	wtCmd.Dir = mainRepo
+	wtCmd.Dir = mainWorktree
 	wtCmd.Stdout = os.Stdout
 	wtCmd.Stderr = os.Stderr
 	if err := wtCmd.Run(); err != nil {
@@ -257,7 +256,7 @@ func cmdRemove(args []string) {
 	// Step 3: Delete the branch
 	fmt.Println("\n--- Deleting branch ---")
 	branchCmd := exec.Command("git", "branch", "-D", branchName)
-	branchCmd.Dir = mainRepo
+	branchCmd.Dir = mainWorktree
 	branchCmd.Stdout = os.Stdout
 	branchCmd.Stderr = os.Stderr
 	if err := branchCmd.Run(); err != nil {
@@ -283,29 +282,34 @@ func cmdRemove(args []string) {
 	fmt.Println()
 }
 
-// validateWorktree checks that targetPath is a git worktree and returns its branch name.
-func validateWorktree(targetPath string) (string, error) {
+// validateWorktree checks that targetPath is a git worktree and returns its
+// branch name and the path to the main worktree (the primary repo checkout).
+func validateWorktree(targetPath string) (branch string, mainWorktree string, err error) {
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to list worktrees: %w", err)
+		return "", "", fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
 	var currentWorktree string
-	var branch string
+	firstWorktree := true
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "worktree ") {
 			currentWorktree = strings.TrimPrefix(line, "worktree ")
+			if firstWorktree {
+				mainWorktree = currentWorktree
+				firstWorktree = false
+			}
 		}
 		if strings.HasPrefix(line, "branch ") && currentWorktree == targetPath {
 			ref := strings.TrimPrefix(line, "branch ")
 			// Strip "refs/heads/" prefix to get the short branch name
 			branch = strings.TrimPrefix(ref, "refs/heads/")
-			return branch, nil
+			return branch, mainWorktree, nil
 		}
 	}
 
-	return "", fmt.Errorf("%s is not a git worktree", targetPath)
+	return "", "", fmt.Errorf("%s is not a git worktree", targetPath)
 }
 
 func getDDEVProjectName(dir string) (string, error) {

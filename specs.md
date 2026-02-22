@@ -23,17 +23,18 @@ This structure is created by `workspace init` and all worktrees live under `spac
 
 The tool supports three subcommands. If the first argument is not a recognized subcommand, usage help is shown and the tool exits.
 
-### `workspace init <git-remote-url>`
+### `workspace init <git-remote-url> [folder-name]`
 
 Bootstraps a new project from a git remote URL using the bare-clone worktree model.
 
 #### Parameters
 
 1) A required git remote URL (HTTPS or SSH)
+2) An optional folder name to override the default project directory name
 
 #### Behavior
 
-1. Extract the project name from the URL (last path component, stripped of `.git` suffix)
+1. Determine the project directory name: use the provided folder name, or extract it from the URL (last path component, stripped of `.git` suffix)
 2. Create a project directory in the current working directory
 3. `git clone --bare <url> <projectDir>/.bare`
 4. Write a `.git` file containing `gitdir: .bare` (this makes git commands work from the project root)

@@ -15,12 +15,13 @@ myproject/
 
 ## Commands
 
-### `workspace init <git-remote-url>`
+### `workspace init <git-remote-url> [folder-name]`
 
 Bootstrap a new project from a git remote:
 
 ```
 workspace init git@github.com:user/project.git
+workspace init git@github.com:user/project.git myproject   # custom folder name
 ```
 
 This clones the repo as a bare repository, sets up the `spaces/` directory structure, and creates a worktree for the default branch. If the project uses DDEV, it will be started automatically.

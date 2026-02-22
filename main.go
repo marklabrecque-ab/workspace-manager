@@ -50,12 +50,13 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: workspace <command> [arguments]
 
 Commands:
-  init <git-remote-url>    Clone a repo into a bare-clone workspace structure
+  init <url> [folder]     Clone a repo into a bare-clone workspace structure
   new <name> [identifier]  Create a new worktree + DDEV environment
   remove [name]            Remove a worktree + DDEV environment
 
 Examples:
   workspace init git@github.com:user/project.git
+  workspace init git@github.com:user/project.git myproject
   workspace new 0001-new-task
   workspace new 0001-new-task t1     (custom DDEV identifier)
   workspace remove 0001-new-task     (remove by name)
@@ -110,16 +111,21 @@ func extractProjectName(remoteURL string) string {
 }
 
 func cmdInit(args []string) {
-	if len(args) != 1 {
-		fmt.Fprintf(os.Stderr, "Error: expected 1 argument (git remote URL), got %d\n", len(args))
-		fmt.Fprintf(os.Stderr, "Usage: workspace init <git-remote-url>\n")
+	if len(args) < 1 || len(args) > 2 {
+		fmt.Fprintf(os.Stderr, "Error: expected 1 or 2 arguments, got %d\n", len(args))
+		fmt.Fprintf(os.Stderr, "Usage: workspace init <git-remote-url> [folder-name]\n")
 		os.Exit(1)
 	}
 
 	remoteURL := args[0]
-	projectName := extractProjectName(remoteURL)
+	var projectName string
+	if len(args) == 2 {
+		projectName = args[1]
+	} else {
+		projectName = extractProjectName(remoteURL)
+	}
 	if projectName == "" {
-		fmt.Fprintf(os.Stderr, "Error: could not extract project name from URL: %s\n", remoteURL)
+		fmt.Fprintf(os.Stderr, "Error: could not determine project name from URL: %s\n", remoteURL)
 		os.Exit(1)
 	}
 

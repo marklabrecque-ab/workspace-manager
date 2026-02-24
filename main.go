@@ -989,6 +989,13 @@ func cleanup(state *cleanupState) {
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree: %v\n", err)
 		}
+		// Ensure the directory is removed even if worktree removal failed
+		if _, err := os.Stat(state.worktreePath); err == nil {
+			fmt.Fprintf(os.Stderr, "Removing leftover directory...\n")
+			if err := os.RemoveAll(state.worktreePath); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to remove directory: %v\n", err)
+			}
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Cleanup complete.\n")

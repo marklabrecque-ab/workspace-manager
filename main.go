@@ -532,6 +532,10 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 			cleanup(state)
 			os.Exit(1)
 		}
+		// Mark config as assume-unchanged so the name change is never committed
+		assumeCmd := exec.Command("git", "update-index", "--assume-unchanged", ".ddev/config.yaml")
+		assumeCmd.Dir = worktreePath
+		_ = assumeCmd.Run()
 		steps = append(steps, StepResult{
 			Description: "Renamed DDEV project",
 			Detail:      ddevName,
@@ -546,6 +550,10 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 				cleanup(state)
 				os.Exit(1)
 			}
+			// Also mark settings.ddev.php as assume-unchanged
+			assumeCmd2 := exec.Command("git", "update-index", "--assume-unchanged", filepath.Join("web", "sites", "default", "settings.ddev.php"))
+			assumeCmd2.Dir = worktreePath
+			_ = assumeCmd2.Run()
 			steps = append(steps, StepResult{
 				Description: "Updated settings.ddev.php",
 				Detail:      "DB host set to ddev-" + ddevName + "-db",
@@ -842,15 +850,15 @@ func renameDDEVProject(worktreePath, identifier, originalName string) error {
 		return fmt.Errorf("could not read %s: %w", configPath, err)
 	}
 
-	oldLine := "name: " + originalName
 	newLine := "name: " + identifier + "-" + originalName
 	content := string(data)
 
-	if !strings.Contains(content, oldLine) {
-		return fmt.Errorf("could not find '%s' in %s", oldLine, configPath)
+	nameRe := regexp.MustCompile(`(?m)^name: .+$`)
+	if !nameRe.MatchString(content) {
+		return fmt.Errorf("could not find 'name:' line in %s", configPath)
 	}
 
-	content = strings.Replace(content, oldLine, newLine, 1)
+	content = nameRe.ReplaceAllString(content, newLine)
 
 	err = os.WriteFile(configPath, []byte(content), 0644)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -36,6 +37,8 @@ func main() {
 		cmdNewFromArgs(args[1:])
 	case "remove":
 		cmdRemove(args[1:])
+	case "list", "ls":
+		cmdList()
 	case "--help", "-h":
 		printUsage()
 		os.Exit(0)
@@ -54,6 +57,7 @@ Commands:
   new [--base <branch>] <name> [identifier]
                            Create a new worktree + DDEV environment
   remove [name]            Remove a worktree + DDEV environment
+  list                     List all workspaces
 
 Examples:
   workspace init git@github.com:user/project.git
@@ -324,6 +328,90 @@ func cleanupInit(projectDir string) {
 	fmt.Fprintf(os.Stderr, "Cleanup complete.\n")
 }
 
+func cmdList() {
+	projectRoot, err := findProjectRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = projectRoot
+	out, err := cmd.Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error listing worktrees: %v\n", err)
+		os.Exit(1)
+	}
+
+	spacesDir := filepath.Join(projectRoot, "spaces")
+
+	type workspace struct {
+		name   string
+		branch string
+		path   string
+	}
+
+	var workspaces []workspace
+	var currentPath string
+	var currentBranch string
+	isBare := false
+
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimPrefix(line, "worktree ")
+			currentBranch = ""
+			isBare = false
+		} else if line == "bare" {
+			isBare = true
+		} else if strings.HasPrefix(line, "branch ") {
+			ref := strings.TrimPrefix(line, "branch ")
+			currentBranch = strings.TrimPrefix(ref, "refs/heads/")
+		} else if line == "" && currentPath != "" {
+			if !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
+				name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
+				workspaces = append(workspaces, workspace{
+					name:   name,
+					branch: currentBranch,
+					path:   currentPath,
+				})
+			}
+			currentPath = ""
+			currentBranch = ""
+			isBare = false
+		}
+	}
+	// Handle last entry (porcelain output may not end with a blank line)
+	if currentPath != "" && !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
+		name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
+		workspaces = append(workspaces, workspace{
+			name:   name,
+			branch: currentBranch,
+			path:   currentPath,
+		})
+	}
+
+	if len(workspaces) == 0 {
+		fmt.Println("No workspaces found.")
+		return
+	}
+
+	// Find the longest name for alignment
+	maxName := 0
+	for _, ws := range workspaces {
+		if len(ws.name) > maxName {
+			maxName = len(ws.name)
+		}
+	}
+
+	for _, ws := range workspaces {
+		if ws.branch != "" {
+			fmt.Printf("  %-*s  (%s)\n", maxName, ws.name, ws.branch)
+		} else {
+			fmt.Printf("  %-*s  (detached)\n", maxName, ws.name)
+		}
+	}
+}
+
 func cmdNewFromArgs(args []string) {
 	var baseBranch string
 	var positional []string
@@ -387,6 +475,15 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		}
 	}
 
+	// Default to origin/develop if it exists and no base was specified
+	if baseBranch == "" {
+		cmd := exec.Command("git", "rev-parse", "--verify", "refs/remotes/origin/develop")
+		cmd.Dir = projectRoot
+		if cmd.Run() == nil {
+			baseBranch = "origin/develop"
+		}
+	}
+
 	worktreePath := filepath.Join(projectRoot, "spaces", worktreeName)
 	state := &cleanupState{worktreePath: worktreePath, projectRoot: projectRoot}
 	var steps []StepResult
@@ -439,6 +536,21 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 			Description: "Renamed DDEV project",
 			Detail:      ddevName,
 		})
+
+		// Step 3b: Update settings.ddev.php with new DB host
+		settingsPath := filepath.Join(worktreePath, "web", "sites", "default", "settings.ddev.php")
+		if _, statErr := os.Stat(settingsPath); statErr == nil {
+			err = updateSettingsDdevPHP(worktreePath, ddevName)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error updating settings.ddev.php: %v\n", err)
+				cleanup(state)
+				os.Exit(1)
+			}
+			steps = append(steps, StepResult{
+				Description: "Updated settings.ddev.php",
+				Detail:      "DB host set to ddev-" + ddevName + "-db",
+			})
+		}
 	} else {
 		steps = append(steps, StepResult{
 			Description: "DDEV project name",
@@ -477,36 +589,20 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 	printSummary(steps)
 }
 
-// findDDEVProjectName searches for a DDEV config in existing worktrees.
-// It prefers the current working directory, then falls back to the first
-// worktree in spaces/ that has .ddev/config.yaml.
+// findDDEVProjectName reads the DDEV project name from the main/master
+// worktree, which always has the original (un-prefixed) name.
 func findDDEVProjectName(projectRoot string) (string, error) {
-	// First check cwd
-	cwd, err := os.Getwd()
-	if err == nil {
-		if name, err := getDDEVProjectName(cwd); err == nil {
-			return name, nil
-		}
-	}
-
-	// Scan spaces/ for any worktree with DDEV config
 	spacesDir := filepath.Join(projectRoot, "spaces")
-	entries, err := os.ReadDir(spacesDir)
-	if err != nil {
-		return "", fmt.Errorf("could not read spaces directory: %w", err)
-	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		dir := filepath.Join(spacesDir, entry.Name())
+	// Check main/master first — these keep the original DDEV name
+	for _, branch := range []string{"main", "master"} {
+		dir := filepath.Join(spacesDir, branch)
 		if name, err := getDDEVProjectName(dir); err == nil {
 			return name, nil
 		}
 	}
 
-	return "", fmt.Errorf("no DDEV config found in any worktree")
+	return "", fmt.Errorf("no DDEV config found in main or master worktree")
 }
 
 func cmdRemove(args []string) {
@@ -716,9 +812,21 @@ func createWorktree(projectRoot, name, baseBranch string) error {
 		return fmt.Errorf("could not create spaces directory: %w", err)
 	}
 
-	gitArgs := []string{"worktree", "add", "-b", name, filepath.Join("spaces", name)}
-	if baseBranch != "" {
-		gitArgs = append(gitArgs, baseBranch)
+	// Check if the branch already exists
+	checkCmd := exec.Command("git", "rev-parse", "--verify", name)
+	checkCmd.Dir = projectRoot
+	branchExists := checkCmd.Run() == nil
+
+	var gitArgs []string
+	if branchExists {
+		// Branch exists — check it out directly
+		gitArgs = []string{"worktree", "add", filepath.Join("spaces", name), name}
+	} else {
+		// Branch doesn't exist — create it
+		gitArgs = []string{"worktree", "add", "-b", name, filepath.Join("spaces", name)}
+		if baseBranch != "" {
+			gitArgs = append(gitArgs, baseBranch)
+		}
 	}
 	cmd := exec.Command("git", gitArgs...)
 	cmd.Dir = projectRoot
@@ -747,6 +855,38 @@ func renameDDEVProject(worktreePath, identifier, originalName string) error {
 	err = os.WriteFile(configPath, []byte(content), 0644)
 	if err != nil {
 		return fmt.Errorf("could not write %s: %w", configPath, err)
+	}
+
+	return nil
+}
+
+func updateSettingsDdevPHP(worktreePath, ddevName string) error {
+	settingsPath := filepath.Join(worktreePath, "web", "sites", "default", "settings.ddev.php")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("could not read %s: %w", settingsPath, err)
+	}
+
+	content := string(data)
+
+	// Remove the first comment block (/* ... */)
+	commentRe := regexp.MustCompile(`(?s)/\*.*?\*/\s*`)
+	loc := commentRe.FindStringIndex(content)
+	if loc != nil {
+		content = content[:loc[0]] + content[loc[1]:]
+	}
+
+	// Set $host to the new DDEV server name
+	hostRe := regexp.MustCompile(`\$host\s*=\s*["'].*?["']`)
+	newHost := `$host = "ddev-` + ddevName + `-db"`
+	if !hostRe.MatchString(content) {
+		return fmt.Errorf("could not find $host assignment in %s", settingsPath)
+	}
+	content = hostRe.ReplaceAllString(content, newHost)
+
+	err = os.WriteFile(settingsPath, []byte(content), 0644)
+	if err != nil {
+		return fmt.Errorf("could not write %s: %w", settingsPath, err)
 	}
 
 	return nil

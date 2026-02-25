@@ -566,6 +566,14 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		})
 	}
 
+	// Remove .ddev/traefik so DDEV regenerates it for the new project
+	traefikPath := filepath.Join(worktreePath, ".ddev", "traefik")
+	if err := os.RemoveAll(traefikPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error removing .ddev/traefik: %v\n", err)
+		cleanup(state)
+		os.Exit(1)
+	}
+
 	// Step 4: Start DDEV
 	fmt.Println("\n--- Starting DDEV ---")
 	err = runCommandLive(worktreePath, "ddev", "start")

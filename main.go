@@ -492,7 +492,6 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 
 	// Detect project type from DDEV config
 	projectType := detectProjectType(projectRoot)
-	_ = projectType
 
 	// Validate base branch exists if specified
 	if baseBranch != "" {
@@ -617,7 +616,22 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Detail:      ddevName,
 	})
 
-	// Step 5: Handle DB import
+	// Step 5: Sync project files
+	filesDetail, err := syncProjectFiles(worktreePath, projectRoot, projectType)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: failed to sync project files: %v\n", err)
+		steps = append(steps, StepResult{
+			Description: "Project files",
+			Detail:      "Failed: " + err.Error(),
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Project files",
+			Detail:      filesDetail,
+		})
+	}
+
+	// Step 6: Handle DB import
 	dbDetail, err := handleDBImport(worktreePath, projectRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nError importing database: %v\n", err)
@@ -1036,6 +1050,43 @@ func handleDBImport(worktreePath, projectRoot string) (string, error) {
 		return "", err
 	}
 	return "Imported from " + input, nil
+}
+
+func syncProjectFiles(worktreePath, projectRoot string, projectType ProjectType) (string, error) {
+	var dest string
+	switch projectType {
+	case ProjectDrupal:
+		dest = filepath.Join(worktreePath, "web", "sites", "default", "files")
+	case ProjectWordPress:
+		dest = filepath.Join(worktreePath, "web", "wp-content", "uploads")
+	default:
+		return "Skipped (unsupported project type)", nil
+	}
+
+	source := filepath.Join(projectRoot, "files")
+
+	// Check if source directory exists
+	info, err := os.Stat(source)
+	if err != nil || !info.IsDir() {
+		return "Skipped (no files/ directory)", nil
+	}
+
+	// Check if source directory is empty
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		return "", fmt.Errorf("error reading files directory: %w", err)
+	}
+	if len(entries) == 0 {
+		return "Skipped (files/ directory is empty)", nil
+	}
+
+	fmt.Println("\n--- Syncing project files ---")
+	err = runCommandLive(worktreePath, "rsync", "-a", source+"/", dest+"/")
+	if err != nil {
+		return "", fmt.Errorf("rsync failed: %w", err)
+	}
+
+	return fmt.Sprintf("Synced to %s", dest), nil
 }
 
 func printSummary(steps []StepResult) {

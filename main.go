@@ -22,6 +22,14 @@ type cleanupState struct {
 	ddevStarted     bool
 }
 
+type ProjectType string
+
+const (
+	ProjectDrupal    ProjectType = "drupal"
+	ProjectWordPress ProjectType = "wordpress"
+	ProjectUnsupported ProjectType = "unsupported"
+)
+
 func main() {
 	args := os.Args[1:]
 
@@ -258,6 +266,13 @@ func cmdInit(args []string) {
 		Detail:      worktreeFullPath,
 	})
 
+	// Detect project type from DDEV config
+	projectType := getDDEVProjectType(worktreeFullPath)
+	steps = append(steps, StepResult{
+		Description: "Project type",
+		Detail:      string(projectType),
+	})
+
 	// Step 7: Check for DDEV and optionally set it up
 	ddevConfig := filepath.Join(worktreeFullPath, ".ddev", "config.yaml")
 	if _, err := os.Stat(ddevConfig); err == nil {
@@ -340,6 +355,10 @@ func cmdList() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Detect project type from DDEV config
+	projectType := detectProjectType(projectRoot)
+	_ = projectType
 
 	cmd := exec.Command("git", "worktree", "list", "--porcelain")
 	cmd.Dir = projectRoot
@@ -470,6 +489,10 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Detect project type from DDEV config
+	projectType := detectProjectType(projectRoot)
+	_ = projectType
 
 	// Validate base branch exists if specified
 	if baseBranch != "" {
@@ -627,6 +650,20 @@ func findDDEVProjectName(projectRoot string) (string, error) {
 	return "", fmt.Errorf("no DDEV config found in main or master worktree")
 }
 
+// detectProjectType reads the DDEV project type from the main/master worktree.
+func detectProjectType(projectRoot string) ProjectType {
+	spacesDir := filepath.Join(projectRoot, "spaces")
+
+	for _, branch := range []string{"main", "master"} {
+		dir := filepath.Join(spacesDir, branch)
+		if pt := getDDEVProjectType(dir); pt != ProjectUnsupported {
+			return pt
+		}
+	}
+
+	return ProjectUnsupported
+}
+
 func cmdRemove(args []string) {
 	projectRoot, err := findProjectRoot()
 	if err != nil {
@@ -663,6 +700,10 @@ func cmdRemove(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Detect project type from DDEV config
+	projectType := getDDEVProjectType(targetPath)
+	_ = projectType
 
 	// Confirmation prompt
 	fmt.Println("The following will be destroyed:")
@@ -825,6 +866,32 @@ func getDDEVProjectName(dir string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no 'name:' field found in %s", configPath)
+}
+
+func getDDEVProjectType(dir string) ProjectType {
+	configPath := filepath.Join(dir, ".ddev", "config.yaml")
+	f, err := os.Open(configPath)
+	if err != nil {
+		return ProjectUnsupported
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "type: ") {
+			value := strings.TrimPrefix(line, "type: ")
+			if strings.HasPrefix(value, "drupal") {
+				return ProjectDrupal
+			}
+			if strings.HasPrefix(value, "wordpress") {
+				return ProjectWordPress
+			}
+			return ProjectUnsupported
+		}
+	}
+
+	return ProjectUnsupported
 }
 
 func createWorktree(projectRoot, name, baseBranch string) error {

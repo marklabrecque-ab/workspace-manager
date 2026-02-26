@@ -221,7 +221,7 @@ func cmdInit(args []string) {
 		Detail:      defaultBranch,
 	})
 
-	// Step 6: Create spaces/ and db/ directories, then first worktree
+	// Step 6: Create spaces/, db/, and files/ directories, then first worktree
 	spacesDir := filepath.Join(projectDir, "spaces")
 	if err := os.MkdirAll(spacesDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating spaces directory: %v\n", err)
@@ -231,6 +231,12 @@ func cmdInit(args []string) {
 	dbDir := filepath.Join(projectDir, "db")
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating db directory: %v\n", err)
+		cleanupInit(projectDir)
+		os.Exit(1)
+	}
+	filesDir := filepath.Join(projectDir, "files")
+	if err := os.MkdirAll(filesDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating files directory: %v\n", err)
 		cleanupInit(projectDir)
 		os.Exit(1)
 	}

@@ -15,13 +15,25 @@ myproject/
   spaces/
     main/             <- worktree (default branch)
     0001-new-task/    <- worktree (feature branch)
+  db/                 <- database dumps (db.sql.gz)
+  files/              <- shared project files (synced to worktrees)
 ```
 
 This structure is created by `workspace init` and all worktrees live under `spaces/`.
 
+The `db/` directory holds database dumps (e.g. `db.sql.gz`) used during workspace creation. The `files/` directory holds shared project files (e.g. uploaded media) that are synced into new worktrees based on project type.
+
+## Project type detection
+
+The tool detects the project type by reading the `type:` field from `.ddev/config.yaml` in the main/master worktree. Supported types:
+
+- **Drupal** — files sync to `web/sites/default/files/`, `settings.ddev.php` is updated with new DB hostname
+- **WordPress** — files sync to `web/wp-content/uploads/`
+- **Unsupported** — file syncing is skipped
+
 ## Subcommands
 
-The tool supports three subcommands. If the first argument is not a recognized subcommand, usage help is shown and the tool exits.
+The tool supports four subcommands. If the first argument is not a recognized subcommand, usage help is shown and the tool exits.
 
 ### `workspace init <git-remote-url> [folder-name]`
 
@@ -35,34 +47,36 @@ Bootstraps a new project from a git remote URL using the bare-clone worktree mod
 #### Behavior
 
 1. Determine the project directory name: use the provided folder name, or extract it from the URL (last path component, stripped of `.git` suffix)
-2. Create a project directory in the current working directory
-3. `git clone --bare <url> <projectDir>/.bare`
-4. Write a `.git` file containing `gitdir: .bare` (this makes git commands work from the project root)
-5. Reconfigure the fetch refspec (bare clones use mirror mode by default): set `remote.origin.fetch` to `+refs/heads/*:refs/remotes/origin/*`, then `git fetch origin`
-6. Detect the default branch via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to checking for `main` then `master`
-7. Create the `spaces/` directory
-8. Create a worktree for the default branch: `git worktree add spaces/<branch> <branch>`
-9. If `.ddev/config.yaml` exists in the new worktree, start DDEV and attempt a database import (same flow as `new`). Otherwise skip DDEV steps.
-10. Print a summary
+2. Check that the directory does not already exist
+3. Create the project directory
+4. `git clone --bare <url> <projectDir>/.bare`
+5. Write a `.git` file containing `gitdir: .bare` (this makes git commands work from the project root)
+6. Reconfigure the fetch refspec (bare clones use mirror mode by default): set `remote.origin.fetch` to `+refs/heads/*:refs/remotes/origin/*`, then `git fetch origin`
+7. Detect the default branch via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to checking for `main` then `master`
+8. Create `spaces/`, `db/`, and `files/` directories
+9. Create a worktree for the default branch: `git worktree add spaces/<branch> <branch>`
+10. Detect the project type from `.ddev/config.yaml` in the new worktree
+11. If `.ddev/config.yaml` exists, start DDEV and attempt a database import from `db/db.sql.gz` (with fallback to prompting the user for a path). Otherwise skip DDEV steps.
+12. Print a summary
 
 If any step fails, the entire project directory is removed.
 
 ### `workspace new [--base <branch>] <name> [identifier]`
 
-Creates a new worktree + DDEV environment.
+Creates a new worktree with its own DDEV environment.
 
 #### Parameters
 
 1) A required string, which will create:
   - a new git worktree named by the string under `spaces/`
-  - a new branch named by the string, based on the current HEAD (or the branch specified by `--base`)
+  - a new branch named by the string, based on `origin/develop` if it exists, otherwise the current HEAD (or the branch specified by `--base`)
   - the new git worktree checks out this new branch
 
-2) An optional string to override the DDEV identifier used when renaming the project
+2) An optional string to override the DDEV identifier used when renaming the project. If omitted, defaults to the first 4 characters of the worktree name.
 
 #### Options
 
-- `--base <branch>` — Create the new branch starting from `<branch>` instead of the current HEAD. The branch must exist; if it doesn't, the command fails with an error.
+- `--base <branch>` or `--base=<branch>` — Create the new branch starting from `<branch>` instead of the default. The branch must exist; if it doesn't, the command fails with an error.
 
 #### Behavior
 
@@ -70,19 +84,32 @@ The project root is located automatically using `git rev-parse --git-common-dir`
 
 The git worktree is created inside the `spaces/` directory under the project root. For example, if the project lives at `/home/mark/myproject` and the worktree name is `0001-new-task`, the worktree is created at `/home/mark/myproject/spaces/0001-new-task`.
 
-If a `.ddev/config.yaml` is found in an existing worktree (preferring the current directory, then scanning `spaces/`), the DDEV project name is read from it and used for the new worktree. The identifier is prepended to the existing DDEV project name, separated by a dash. So `workspace new 0001-new-task` creates the worktree and the DDEV project name becomes `0001-project` (where `project` was the original DDEV name).
+**DDEV project naming:**
 
-If no DDEV config is found, the DDEV steps are skipped entirely.
+The DDEV project name is read from the main/master worktree (which always has the original un-prefixed name). For feature branches, the identifier is prepended to the original name, separated by a dash — e.g. `workspace new 0001-new-task` creates the DDEV project `0001-projectname`.
 
-Once the worktree has been created and (if applicable) the name has been edited, `ddev start` is run in the new directory. After DDEV starts, a database import is attempted: the `tmp/db.sql.gz` file is used if it exists, otherwise the user is prompted for a path. If the user enters nothing, the DB import is skipped.
+For default branches (main/master), the DDEV project name is kept as-is (not renamed).
 
-Finally, a summary of all steps is printed to stdout.
+If no DDEV config is found in any worktree, the DDEV steps are skipped entirely.
 
-If any step fails, the script aborts immediately with a human-readable error and cleans up any partially-created resources.
+**After creating the worktree and renaming DDEV (for non-default branches):**
+
+1. `.ddev/config.yaml` is marked as `assume-unchanged` so the name change is never committed
+2. For Drupal projects, `settings.ddev.php` is updated with the new database hostname (`ddev-<newname>-db`) and also marked as `assume-unchanged`
+3. `.ddev/traefik` is removed so DDEV regenerates its Traefik config for the new project name
+4. `ddev start` is run in the new worktree
+5. Project files are synced from the shared `files/` directory using rsync:
+   - Drupal: `files/` → `web/sites/default/files/`
+   - WordPress: `files/` → `web/wp-content/uploads/`
+   - Skipped for unsupported project types or if `files/` is empty/missing
+6. A database import is attempted from `db/db.sql.gz`. If the file doesn't exist, the user is prompted for a path. If the user enters nothing, the import is skipped.
+7. A summary of all steps is printed
+
+If any step fails, the script aborts with a human-readable error and cleans up partially-created resources (DDEV project, worktree directory).
 
 ### `workspace remove [name]`
 
-Tears down a worktree + DDEV environment.
+Tears down a worktree and its DDEV environment.
 
 - `workspace remove <name>` — remove the named worktree (resolved as `spaces/<name>` under the project root)
 - `workspace remove` — remove the worktree at the current directory
@@ -94,6 +121,18 @@ Tears down a worktree + DDEV environment.
 3. **Validate**: Confirm the target is a git worktree by checking `git worktree list --porcelain` (run from the project root). Bare repo entries are skipped. Abort if not found.
 4. **Confirm**: Print what will be destroyed (worktree path, branch, DDEV project) and prompt `"Are you sure? (y/N)"`. Abort on anything other than `y`/`Y`.
 5. **Delete DDEV**: If `.ddev/config.yaml` exists in the target, run `ddev delete --omit-snapshot -y` in the target worktree directory. Otherwise skip.
-6. **Remove worktree**: Run `git worktree remove --force <path>` from the project root.
+6. **Remove worktree**: Run `git worktree remove --force <path>` from the project root. If the worktree directory still exists after removal, it is deleted.
 7. **Delete branch**: Run `git branch -D <branch-name>` from the project root to clean up the associated branch.
-8. **Print summary** of what was removed.
+8. **Prune Docker build cache**: Run `docker builder prune -f` to reclaim disk space.
+9. **Print summary** of what was removed.
+
+### `workspace list` (alias: `ls`)
+
+Lists all worktrees in the project.
+
+#### Behavior
+
+1. **Find project root**: Located automatically via `git rev-parse --git-common-dir`.
+2. **Parse worktrees**: Runs `git worktree list --porcelain` and filters to only show worktrees under the `spaces/` directory (bare repo entries are excluded).
+3. **Display**: Each worktree is printed as `<name>  (<branch>)`, or `<name>  (detached)` for detached HEAD states. Names are column-aligned.
+4. If no worktrees are found, prints "No workspaces found."

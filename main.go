@@ -75,6 +75,7 @@ Examples:
   workspace new --base develop 0001-new-task  (branch off develop)
   workspace remove 0001-new-task     (remove by name)
   workspace remove                   (remove current directory's worktree)
+  workspace list                     (list all workspaces)
 `)
 }
 

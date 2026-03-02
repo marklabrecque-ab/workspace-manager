@@ -47,6 +47,8 @@ func main() {
 		cmdRemove(args[1:])
 	case "list", "ls":
 		cmdList()
+	case "projects":
+		cmdProjects()
 	case "--help", "-h":
 		printUsage()
 		os.Exit(0)
@@ -66,6 +68,7 @@ Commands:
                            Create a new worktree + DDEV environment
   remove [name]            Remove a worktree + DDEV environment
   list                     List all workspaces
+  projects                 List all workspace projects in ~/Projects
 
 Examples:
   workspace init git@github.com:user/project.git
@@ -348,6 +351,127 @@ func cleanupInit(projectDir string) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to remove project directory: %v\n", err)
 	}
 	fmt.Fprintf(os.Stderr, "Cleanup complete.\n")
+}
+
+func cmdProjects() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not determine home directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	projectsDir := filepath.Join(homeDir, "Projects")
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No ~/Projects directory found.")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Error reading ~/Projects: %v\n", err)
+		os.Exit(1)
+	}
+
+	type worktreeInfo struct {
+		name   string
+		branch string
+	}
+
+	type projectInfo struct {
+		name       string
+		path       string
+		worktrees  []worktreeInfo
+	}
+
+	var projects []projectInfo
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		dirPath := filepath.Join(projectsDir, entry.Name())
+		spacesDir := filepath.Join(dirPath, "spaces")
+
+		if info, err := os.Stat(spacesDir); err != nil || !info.IsDir() {
+			continue
+		}
+
+		// Run git worktree list --porcelain
+		cmd := exec.Command("git", "worktree", "list", "--porcelain")
+		cmd.Dir = dirPath
+		out, err := cmd.Output()
+		if err != nil {
+			continue
+		}
+
+		var worktrees []worktreeInfo
+		var currentPath string
+		var currentBranch string
+		isBare := false
+
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "worktree ") {
+				currentPath = strings.TrimPrefix(line, "worktree ")
+				currentBranch = ""
+				isBare = false
+			} else if line == "bare" {
+				isBare = true
+			} else if strings.HasPrefix(line, "branch ") {
+				ref := strings.TrimPrefix(line, "branch ")
+				currentBranch = strings.TrimPrefix(ref, "refs/heads/")
+			} else if line == "" && currentPath != "" {
+				if !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
+					name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
+					worktrees = append(worktrees, worktreeInfo{name: name, branch: currentBranch})
+				}
+				currentPath = ""
+				currentBranch = ""
+				isBare = false
+			}
+		}
+		// Handle last entry
+		if currentPath != "" && !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
+			name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
+			worktrees = append(worktrees, worktreeInfo{name: name, branch: currentBranch})
+		}
+
+		projects = append(projects, projectInfo{
+			name:      entry.Name(),
+			path:      dirPath,
+			worktrees: worktrees,
+		})
+	}
+
+	if len(projects) == 0 {
+		fmt.Println("No workspace projects found in ~/Projects.")
+		return
+	}
+
+	for i, proj := range projects {
+		fmt.Printf("%s (~/Projects/%s)\n", proj.name, proj.name)
+
+		if len(proj.worktrees) == 0 {
+			fmt.Println("  (no worktrees)")
+		} else {
+			maxName := 0
+			for _, wt := range proj.worktrees {
+				if len(wt.name) > maxName {
+					maxName = len(wt.name)
+				}
+			}
+			for _, wt := range proj.worktrees {
+				if wt.branch != "" {
+					fmt.Printf("  %-*s  (%s)\n", maxName, wt.name, wt.branch)
+				} else {
+					fmt.Printf("  %-*s  (detached)\n", maxName, wt.name)
+				}
+			}
+		}
+
+		if i < len(projects)-1 {
+			fmt.Println()
+		}
+	}
 }
 
 func cmdList() {

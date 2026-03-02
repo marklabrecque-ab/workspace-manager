@@ -68,6 +68,27 @@ workspace ls        # alias
 
 Shows each worktree name and its checked-out branch.
 
+### `workspace projects`
+
+List all workspace projects found in `~/Projects`:
+
+```
+workspace projects
+```
+
+Scans `~/Projects` for subdirectories that have been initialized as workspaces (indicated by the presence of a `spaces/` directory). For each project, shows the project name, path, and all worktrees with their branches.
+
+Example output:
+
+```
+my-site (~/Projects/my-site)
+  main     (main)
+  feature  (feature-branch)
+
+another-site (~/Projects/another-site)
+  develop  (develop)
+```
+
 ## Compile
 
 Requirements: Go v1.21+

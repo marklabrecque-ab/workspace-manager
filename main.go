@@ -247,7 +247,7 @@ func cmdInit(args []string) {
 		os.Exit(1)
 	}
 	filesDir := filepath.Join(projectDir, "files")
-	if err := os.MkdirAll(filesDir, 0755); err != nil {
+	if err := os.MkdirAll(filesDir, 0777); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating files directory: %v\n", err)
 		cleanupInit(projectDir)
 		os.Exit(1)
@@ -277,6 +277,21 @@ func cmdInit(args []string) {
 		Detail:      string(projectType),
 	})
 
+	// Link project files
+	filesDetail, err := linkProjectFiles(worktreeFullPath, projectDir, projectType)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: failed to link project files: %v\n", err)
+		steps = append(steps, StepResult{
+			Description: "Project files",
+			Detail:      "Failed: " + err.Error(),
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Project files",
+			Detail:      filesDetail,
+		})
+	}
+
 	// Step 7: Check for DDEV and optionally set it up
 	ddevConfig := filepath.Join(worktreeFullPath, ".ddev", "config.yaml")
 	if _, err := os.Stat(ddevConfig); err == nil {
@@ -305,6 +320,22 @@ func cmdInit(args []string) {
 					Description: "Database",
 					Detail:      dbDetail,
 				})
+			}
+
+			if projectType == ProjectDrupal {
+				fmt.Println("\n--- Running composer install ---")
+				if err := runCommandLive(worktreeFullPath, "ddev", "composer", "install"); err != nil {
+					fmt.Fprintf(os.Stderr, "\nWarning: failed to run composer install: %v\n", err)
+					steps = append(steps, StepResult{
+						Description: "Composer install",
+						Detail:      fmt.Sprintf("Failed: %v", err),
+					})
+				} else {
+					steps = append(steps, StepResult{
+						Description: "Composer install",
+						Detail:      "Complete",
+					})
+				}
 			}
 		}
 	} else {
@@ -727,6 +758,21 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		os.Exit(1)
 	}
 
+	// Link project files (before DDEV start so files are available immediately)
+	filesDetail, err := linkProjectFiles(worktreePath, projectRoot, projectType)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: failed to link project files: %v\n", err)
+		steps = append(steps, StepResult{
+			Description: "Project files",
+			Detail:      "Failed: " + err.Error(),
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Project files",
+			Detail:      filesDetail,
+		})
+	}
+
 	// Step 4: Start DDEV
 	fmt.Println("\n--- Starting DDEV ---")
 	err = runCommandLive(worktreePath, "ddev", "start")
@@ -741,22 +787,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Detail:      ddevName,
 	})
 
-	// Step 5: Sync project files
-	filesDetail, err := syncProjectFiles(worktreePath, projectRoot, projectType)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nWarning: failed to sync project files: %v\n", err)
-		steps = append(steps, StepResult{
-			Description: "Project files",
-			Detail:      "Failed: " + err.Error(),
-		})
-	} else {
-		steps = append(steps, StepResult{
-			Description: "Project files",
-			Detail:      filesDetail,
-		})
-	}
-
-	// Step 6: Handle DB import
+	// Step 5: Handle DB import
 	dbDetail, err := handleDBImport(worktreePath, projectRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nError importing database: %v\n", err)
@@ -767,6 +798,23 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Description: "Database",
 		Detail:      dbDetail,
 	})
+
+	// Step 6: Composer install for Drupal projects
+	if projectType == ProjectDrupal {
+		fmt.Println("\n--- Running composer install ---")
+		if err := runCommandLive(worktreePath, "ddev", "composer", "install"); err != nil {
+			fmt.Fprintf(os.Stderr, "\nWarning: failed to run composer install: %v\n", err)
+			steps = append(steps, StepResult{
+				Description: "Composer install",
+				Detail:      fmt.Sprintf("Failed: %v", err),
+			})
+		} else {
+			steps = append(steps, StepResult{
+				Description: "Composer install",
+				Detail:      "Complete",
+			})
+		}
+	}
 
 	// Done
 	fmt.Println()
@@ -1177,7 +1225,7 @@ func handleDBImport(worktreePath, projectRoot string) (string, error) {
 	return "Imported from " + input, nil
 }
 
-func syncProjectFiles(worktreePath, projectRoot string, projectType ProjectType) (string, error) {
+func linkProjectFiles(worktreePath, projectRoot string, projectType ProjectType) (string, error) {
 	var dest string
 	switch projectType {
 	case ProjectDrupal:
@@ -1190,28 +1238,53 @@ func syncProjectFiles(worktreePath, projectRoot string, projectType ProjectType)
 
 	source := filepath.Join(projectRoot, "files")
 
-	// Check if source directory exists
-	info, err := os.Stat(source)
-	if err != nil || !info.IsDir() {
-		return "Skipped (no files/ directory)", nil
+	// Ensure the shared files directory exists
+	if err := os.MkdirAll(source, 0777); err != nil {
+		return "", fmt.Errorf("could not create files directory: %w", err)
 	}
 
-	// Check if source directory is empty
-	entries, err := os.ReadDir(source)
+	// Check if dest is already the correct symlink
+	if target, err := os.Readlink(dest); err == nil {
+		absTarget := target
+		if !filepath.IsAbs(absTarget) {
+			absTarget = filepath.Join(filepath.Dir(dest), target)
+		}
+		absTarget, _ = filepath.Abs(absTarget)
+		absSource, _ := filepath.Abs(source)
+		if absTarget == absSource {
+			return fmt.Sprintf("Symlink already exists: %s", dest), nil
+		}
+	}
+
+	// If dest exists as a real directory, remove it
+	if info, err := os.Lstat(dest); err == nil {
+		if info.IsDir() {
+			if err := os.RemoveAll(dest); err != nil {
+				return "", fmt.Errorf("could not remove existing directory %s: %w", dest, err)
+			}
+		} else {
+			if err := os.Remove(dest); err != nil {
+				return "", fmt.Errorf("could not remove existing file %s: %w", dest, err)
+			}
+		}
+	}
+
+	// Ensure the parent directory of dest exists
+	if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		return "", fmt.Errorf("could not create parent directory: %w", err)
+	}
+
+	// Compute relative path from dest's parent to source
+	relPath, err := filepath.Rel(filepath.Dir(dest), source)
 	if err != nil {
-		return "", fmt.Errorf("error reading files directory: %w", err)
-	}
-	if len(entries) == 0 {
-		return "Skipped (files/ directory is empty)", nil
+		return "", fmt.Errorf("could not compute relative path: %w", err)
 	}
 
-	fmt.Println("\n--- Syncing project files ---")
-	err = runCommandLive(worktreePath, "rsync", "-a", source+"/", dest+"/")
-	if err != nil {
-		return "", fmt.Errorf("rsync failed: %w", err)
+	if err := os.Symlink(relPath, dest); err != nil {
+		return "", fmt.Errorf("could not create symlink: %w", err)
 	}
 
-	return fmt.Sprintf("Synced to %s", dest), nil
+	return fmt.Sprintf("Linked %s → %s", dest, relPath), nil
 }
 
 func printSummary(steps []StepResult) {

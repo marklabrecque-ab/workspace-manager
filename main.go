@@ -647,6 +647,16 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		os.Exit(1)
 	}
 
+	// Fetch latest refs from origin
+	fmt.Println("--- Fetching latest changes ---")
+	fetchCmd := exec.Command("git", "fetch", "origin")
+	fetchCmd.Dir = projectRoot
+	fetchCmd.Stdout = os.Stdout
+	fetchCmd.Stderr = os.Stderr
+	if err := fetchCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to fetch from origin: %v\n", err)
+	}
+
 	// Detect project type from DDEV config
 	projectType := detectProjectType(projectRoot)
 

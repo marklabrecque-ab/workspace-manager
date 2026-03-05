@@ -799,19 +799,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Detail:      ddevName,
 	})
 
-	// Step 5: Handle DB import
-	dbDetail, err := handleDBImport(worktreePath, projectRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nError importing database: %v\n", err)
-		cleanup(state)
-		os.Exit(1)
-	}
-	steps = append(steps, StepResult{
-		Description: "Database",
-		Detail:      dbDetail,
-	})
-
-	// Step 6: Composer install for Drupal projects
+	// Step 5: Composer install for Drupal projects
 	if projectType == ProjectDrupal {
 		fmt.Println("\n--- Running composer install ---")
 		if err := runCommandLive(worktreePath, "ddev", "composer", "install"); err != nil {
@@ -827,6 +815,18 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 			})
 		}
 	}
+
+	// Step 6: Handle DB import
+	dbDetail, err := handleDBImport(worktreePath, projectRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nError importing database: %v\n", err)
+		cleanup(state)
+		os.Exit(1)
+	}
+	steps = append(steps, StepResult{
+		Description: "Database",
+		Detail:      dbDetail,
+	})
 
 	// Done
 	fmt.Println()

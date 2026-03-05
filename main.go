@@ -20,6 +20,7 @@ type cleanupState struct {
 	projectRoot     string
 	worktreeCreated bool
 	ddevStarted     bool
+	ddevName        string
 }
 
 type ProjectType string
@@ -774,6 +775,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 	}
 
 	// Step 4: Start DDEV
+	state.ddevName = ddevName
 	fmt.Println("\n--- Starting DDEV ---")
 	err = runCommandLive(worktreePath, "ddev", "start")
 	if err != nil {
@@ -914,10 +916,12 @@ func cmdRemove(args []string) {
 	var steps []StepResult
 
 	// Step 1: Delete DDEV (if present)
-	ddevConfig := filepath.Join(targetPath, ".ddev", "config.yaml")
-	if _, err := os.Stat(ddevConfig); err == nil {
+	ddevName, ddevErr := getDDEVProjectName(targetPath)
+	if ddevErr == nil {
 		fmt.Println("\n--- Deleting DDEV project ---")
-		ddevCmd := exec.Command("ddev", "delete", "--omit-snapshot", "-y")
+		// Pass the project name explicitly so DDEV can clean up its
+		// global registration even if the directory disappears later.
+		ddevCmd := exec.Command("ddev", "delete", "--omit-snapshot", "-y", ddevName)
 		ddevCmd.Dir = targetPath
 		ddevCmd.Stdout = os.Stdout
 		ddevCmd.Stderr = os.Stderr
@@ -930,7 +934,7 @@ func cmdRemove(args []string) {
 		} else {
 			steps = append(steps, StepResult{
 				Description: "DDEV project",
-				Detail:      "Deleted",
+				Detail:      "Deleted (" + ddevName + ")",
 			})
 		}
 	} else {
@@ -1299,9 +1303,9 @@ func printSummary(steps []StepResult) {
 func cleanup(state *cleanupState) {
 	fmt.Fprintf(os.Stderr, "\n--- Cleaning up ---\n")
 
-	if state.ddevStarted {
+	if state.ddevStarted && state.ddevName != "" {
 		fmt.Fprintf(os.Stderr, "Deleting DDEV project...\n")
-		cmd := exec.Command("ddev", "delete", "-O", "--omit-snapshot")
+		cmd := exec.Command("ddev", "delete", "-O", "-y", state.ddevName)
 		cmd.Dir = state.worktreePath
 		cmd.Stdout = os.Stderr
 		cmd.Stderr = os.Stderr

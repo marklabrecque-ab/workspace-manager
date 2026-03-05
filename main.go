@@ -721,18 +721,14 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 	ddevName := originalName
 	if !isDefaultBranch {
 		ddevName = identifier + "-" + originalName
-		err = renameDDEVProject(worktreePath, identifier, originalName)
+		err = createDDEVLocalConfig(worktreePath, ddevName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error renaming DDEV project: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error creating DDEV local config: %v\n", err)
 			cleanup(state)
 			os.Exit(1)
 		}
-		// Mark config as assume-unchanged so the name change is never committed
-		assumeCmd := exec.Command("git", "update-index", "--assume-unchanged", ".ddev/config.yaml")
-		assumeCmd.Dir = worktreePath
-		_ = assumeCmd.Run()
 		steps = append(steps, StepResult{
-			Description: "Renamed DDEV project",
+			Description: "Created DDEV local config",
 			Detail:      ddevName,
 		})
 
@@ -1048,10 +1044,25 @@ func validateWorktree(targetPath, projectRoot string) (branch string, err error)
 }
 
 func getDDEVProjectName(dir string) (string, error) {
+	// Check config.local.yaml first for a name override
+	localConfigPath := filepath.Join(dir, ".ddev", "config.local.yaml")
+	if name, err := readDDEVName(localConfigPath); err == nil {
+		return name, nil
+	}
+
+	// Fall back to config.yaml
 	configPath := filepath.Join(dir, ".ddev", "config.yaml")
-	f, err := os.Open(configPath)
+	if name, err := readDDEVName(configPath); err == nil {
+		return name, nil
+	}
+
+	return "", fmt.Errorf("no 'name:' field found in %s or %s", localConfigPath, configPath)
+}
+
+func readDDEVName(path string) (string, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("could not open %s: %w", configPath, err)
+		return "", err
 	}
 	defer f.Close()
 
@@ -1063,10 +1074,10 @@ func getDDEVProjectName(dir string) (string, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error reading %s: %w", configPath, err)
+		return "", err
 	}
 
-	return "", fmt.Errorf("no 'name:' field found in %s", configPath)
+	return "", fmt.Errorf("no 'name:' field found in %s", path)
 }
 
 func getDDEVProjectType(dir string) ProjectType {
@@ -1125,28 +1136,13 @@ func createWorktree(projectRoot, name, baseBranch string) error {
 	return cmd.Run()
 }
 
-func renameDDEVProject(worktreePath, identifier, originalName string) error {
-	configPath := filepath.Join(worktreePath, ".ddev", "config.yaml")
-	data, err := os.ReadFile(configPath)
+func createDDEVLocalConfig(worktreePath, ddevName string) error {
+	localConfigPath := filepath.Join(worktreePath, ".ddev", "config.local.yaml")
+	content := "name: " + ddevName + "\n"
+	err := os.WriteFile(localConfigPath, []byte(content), 0644)
 	if err != nil {
-		return fmt.Errorf("could not read %s: %w", configPath, err)
+		return fmt.Errorf("could not write %s: %w", localConfigPath, err)
 	}
-
-	newLine := "name: " + identifier + "-" + originalName
-	content := string(data)
-
-	nameRe := regexp.MustCompile(`(?m)^name: .+$`)
-	if !nameRe.MatchString(content) {
-		return fmt.Errorf("could not find 'name:' line in %s", configPath)
-	}
-
-	content = nameRe.ReplaceAllString(content, newLine)
-
-	err = os.WriteFile(configPath, []byte(content), 0644)
-	if err != nil {
-		return fmt.Errorf("could not write %s: %w", configPath, err)
-	}
-
 	return nil
 }
 

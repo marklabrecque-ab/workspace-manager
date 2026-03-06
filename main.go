@@ -826,28 +826,18 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 
 // findDDEVProjectName reads the DDEV project name from the main/master
 // worktree, which always has the original (un-prefixed) name.
-func findDDEVProjectName(projectRoot string) (string, error) {
-	spacesDir := filepath.Join(projectRoot, "spaces")
-
-	// Check main/master first — these keep the original DDEV name
-	for _, branch := range []string{"main", "master"} {
-		dir := filepath.Join(spacesDir, branch)
-		if name, err := getDDEVProjectName(dir); err == nil {
-			return name, nil
-		}
-	}
-
-	return "", fmt.Errorf("no DDEV config found in main or master worktree")
-}
-
-// detectProjectType reads the DDEV project type from the main/master worktree.
+// detectProjectType reads the DDEV project type from the first existing worktree.
 func detectProjectType(projectRoot string) ProjectType {
 	spacesDir := filepath.Join(projectRoot, "spaces")
 
-	for _, branch := range []string{"main", "master"} {
-		dir := filepath.Join(spacesDir, branch)
-		if pt := getDDEVProjectType(dir); pt != ProjectUnsupported {
-			return pt
+	entries, err := os.ReadDir(spacesDir)
+	if err != nil {
+		return ProjectUnsupported
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			return getDDEVProjectType(filepath.Join(spacesDir, entry.Name()))
 		}
 	}
 

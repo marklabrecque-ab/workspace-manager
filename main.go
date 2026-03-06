@@ -1116,7 +1116,7 @@ func createWorktree(projectRoot, name, baseBranch string) error {
 		// Branch doesn't exist — create it
 		gitArgs = []string{"worktree", "add", "-b", name, filepath.Join("spaces", name)}
 		if baseBranch != "" {
-			gitArgs = append(gitArgs, baseBranch)
+			gitArgs = append(gitArgs, "--no-track", baseBranch)
 		}
 	}
 	cmd := exec.Command("git", gitArgs...)

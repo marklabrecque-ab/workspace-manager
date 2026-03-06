@@ -696,6 +696,34 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Detail:      worktreeName,
 	})
 
+	// Step 3: Push branch and set up tracking if it doesn't exist on the remote
+	remoteBranchCheck := exec.Command("git", "rev-parse", "--verify", "refs/remotes/origin/"+worktreeName)
+	remoteBranchCheck.Dir = projectRoot
+	if remoteBranchCheck.Run() != nil {
+		fmt.Println("\n--- Pushing branch to remote ---")
+		pushCmd := exec.Command("git", "push", "-u", "origin", worktreeName)
+		pushCmd.Dir = worktreePath
+		pushCmd.Stdout = os.Stdout
+		pushCmd.Stderr = os.Stderr
+		if err := pushCmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to push branch to remote: %v\n", err)
+			steps = append(steps, StepResult{
+				Description: "Push branch to remote",
+				Detail:      "Failed (can be pushed manually later)",
+			})
+		} else {
+			steps = append(steps, StepResult{
+				Description: "Pushed branch to remote",
+				Detail:      worktreeName + " → origin/" + worktreeName,
+			})
+		}
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Remote branch",
+			Detail:      "Already exists, skipped push",
+		})
+	}
+
 	if !hasDDEV {
 		steps = append(steps, StepResult{
 			Description: "DDEV",

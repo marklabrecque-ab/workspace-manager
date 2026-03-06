@@ -647,9 +647,6 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to fetch from origin: %v\n", err)
 	}
 
-	// Detect project type from DDEV config
-	projectType := detectProjectType(projectRoot)
-
 	// Validate base branch exists if specified
 	if baseBranch != "" {
 		cmd := exec.Command("git", "rev-parse", "--verify", baseBranch)
@@ -673,17 +670,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 	state := &cleanupState{worktreePath: worktreePath, projectRoot: projectRoot}
 	var steps []StepResult
 
-	// Step 1: Read current DDEV project name (from any existing worktree)
-	originalName, err := findDDEVProjectName(projectRoot)
-	hasDDEV := err == nil
-	if hasDDEV {
-		steps = append(steps, StepResult{
-			Description: "Read DDEV project name",
-			Detail:      originalName,
-		})
-	}
-
-	// Step 2: Create git worktree
+	// Step 1: Create git worktree
 	err = createWorktree(projectRoot, worktreeName, baseBranch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating worktree: %v\n", err)
@@ -696,7 +683,7 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Detail:      worktreeName,
 	})
 
-	// Step 3: Push branch and set up tracking if it doesn't exist on the remote
+	// Step 2: Push branch and set up tracking if it doesn't exist on the remote
 	remoteBranchCheck := exec.Command("git", "rev-parse", "--verify", "refs/remotes/origin/"+worktreeName)
 	remoteBranchCheck.Dir = projectRoot
 	if remoteBranchCheck.Run() != nil {
@@ -724,18 +711,28 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		})
 	}
 
+	// Step 3: Detect DDEV from the new worktree
+	originalName, err := getDDEVProjectName(worktreePath)
+	hasDDEV := err == nil
+	projectType := getDDEVProjectType(worktreePath)
+
 	if !hasDDEV {
 		steps = append(steps, StepResult{
 			Description: "DDEV",
-			Detail:      "Skipped (no .ddev/config.yaml found in any worktree)",
+			Detail:      "Skipped (no .ddev/config.yaml found)",
 		})
 		fmt.Println()
 		printSummary(steps)
 		return
 	}
 
-	// Step 3: Rename DDEV project (skip for main/master — keep default name)
-	isDefaultBranch := worktreeName == "main" || worktreeName == "master"
+	steps = append(steps, StepResult{
+		Description: "Read DDEV project name",
+		Detail:      originalName,
+	})
+
+	// Step 4: Rename DDEV project (skip for develop/main — keep default name)
+	isDefaultBranch := worktreeName == "develop" || worktreeName == "main"
 	ddevName := originalName
 	if !isDefaultBranch {
 		ddevName = identifier + "-" + originalName

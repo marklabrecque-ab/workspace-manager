@@ -225,7 +225,9 @@ func cmdInit(args []string) {
 	// Step 5: Detect default branch
 	defaultBranch := detectDefaultBranch(projectDir)
 	if defaultBranch == "" {
-		fmt.Fprintf(os.Stderr, "Error: could not detect default branch\n")
+		fmt.Fprintf(os.Stderr, "Error: could not detect default branch.\n")
+		fmt.Fprintf(os.Stderr, "Neither 'develop' nor 'main' branches were found on the remote.\n")
+		fmt.Fprintf(os.Stderr, "Please ensure the remote repository has a 'develop' or 'main' branch.\n")
 		cleanupInit(projectDir)
 		os.Exit(1)
 	}
@@ -352,20 +354,8 @@ func cmdInit(args []string) {
 }
 
 func detectDefaultBranch(projectDir string) string {
-	// Try symbolic-ref first
-	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
-	cmd.Dir = projectDir
-	out, err := cmd.Output()
-	if err == nil {
-		ref := strings.TrimSpace(string(out))
-		branch := strings.TrimPrefix(ref, "refs/remotes/origin/")
-		if branch != ref {
-			return branch
-		}
-	}
-
-	// Fall back to checking for main, then master
-	for _, branch := range []string{"main", "master"} {
+	// Prefer develop, fall back to main
+	for _, branch := range []string{"develop", "main"} {
 		cmd := exec.Command("git", "rev-parse", "--verify", "refs/remotes/origin/"+branch)
 		cmd.Dir = projectDir
 		if err := cmd.Run(); err == nil {

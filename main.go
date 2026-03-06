@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -746,25 +745,6 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 			Description: "Created DDEV local config",
 			Detail:      ddevName,
 		})
-
-		// Step 3b: Update settings.ddev.php with new DB host
-		settingsPath := filepath.Join(worktreePath, "web", "sites", "default", "settings.ddev.php")
-		if _, statErr := os.Stat(settingsPath); statErr == nil {
-			err = updateSettingsDdevPHP(worktreePath, ddevName)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error updating settings.ddev.php: %v\n", err)
-				cleanup(state)
-				os.Exit(1)
-			}
-			// Also mark settings.ddev.php as assume-unchanged
-			assumeCmd2 := exec.Command("git", "update-index", "--assume-unchanged", filepath.Join("web", "sites", "default", "settings.ddev.php"))
-			assumeCmd2.Dir = worktreePath
-			_ = assumeCmd2.Run()
-			steps = append(steps, StepResult{
-				Description: "Updated settings.ddev.php",
-				Detail:      "DB host set to ddev-" + ddevName + "-db",
-			})
-		}
 	} else {
 		steps = append(steps, StepResult{
 			Description: "DDEV project name",
@@ -1161,37 +1141,6 @@ func createDDEVLocalConfig(worktreePath, ddevName string) error {
 	return nil
 }
 
-func updateSettingsDdevPHP(worktreePath, ddevName string) error {
-	settingsPath := filepath.Join(worktreePath, "web", "sites", "default", "settings.ddev.php")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return fmt.Errorf("could not read %s: %w", settingsPath, err)
-	}
-
-	content := string(data)
-
-	// Remove the first comment block (/* ... */)
-	commentRe := regexp.MustCompile(`(?s)/\*.*?\*/\s*`)
-	loc := commentRe.FindStringIndex(content)
-	if loc != nil {
-		content = content[:loc[0]] + content[loc[1]:]
-	}
-
-	// Set $host to the new DDEV server name
-	hostRe := regexp.MustCompile(`\$host\s*=\s*["'].*?["']`)
-	newHost := `$host = "ddev-` + ddevName + `-db"`
-	if !hostRe.MatchString(content) {
-		return fmt.Errorf("could not find $host assignment in %s", settingsPath)
-	}
-	content = hostRe.ReplaceAllString(content, newHost)
-
-	err = os.WriteFile(settingsPath, []byte(content), 0644)
-	if err != nil {
-		return fmt.Errorf("could not write %s: %w", settingsPath, err)
-	}
-
-	return nil
-}
 
 func runCommandLive(dir, name string, args ...string) error {
 	cmd := exec.Command(name, args...)

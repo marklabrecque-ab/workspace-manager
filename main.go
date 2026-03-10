@@ -626,10 +626,11 @@ func cmdNewFromArgs(args []string) {
 		}
 	}
 
-	cmdNew(worktreeName, identifier, baseBranch)
+	identifierExplicit := len(positional) == 2
+	cmdNew(worktreeName, identifier, baseBranch, identifierExplicit)
 }
 
-func cmdNew(worktreeName, identifier, baseBranch string) {
+func cmdNew(worktreeName, identifier, baseBranch string, identifierExplicit bool) {
 	projectRoot, err := findProjectRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -730,8 +731,9 @@ func cmdNew(worktreeName, identifier, baseBranch string) {
 		Detail:      originalName,
 	})
 
-	// Step 4: Rename DDEV project (skip for develop/main — keep default name)
-	isDefaultBranch := worktreeName == "develop" || worktreeName == "main"
+	// Step 4: Rename DDEV project (skip for develop/main — keep default name,
+	// unless the user explicitly provided an identifier to override it)
+	isDefaultBranch := (worktreeName == "develop" || worktreeName == "main") && !identifierExplicit
 	ddevName := originalName
 	if !isDefaultBranch {
 		ddevName = identifier + "-" + originalName

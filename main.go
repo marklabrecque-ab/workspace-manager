@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -769,6 +770,26 @@ func cmdNew(worktreeName, identifier, baseBranch string, identifierExplicit bool
 			Description: "Created DDEV local config",
 			Detail:      ddevName,
 		})
+
+		// Update settings.ddev.php with new DB host (Drupal projects)
+		if projectType == ProjectDrupal {
+			settingsPath := filepath.Join(worktreePath, "web", "sites", "default", "settings.ddev.php")
+			if _, statErr := os.Stat(settingsPath); statErr == nil {
+				err = updateSettingsDdevPHP(settingsPath, ddevName)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error updating settings.ddev.php: %v\n", err)
+					cleanup(state)
+					os.Exit(1)
+				}
+				assumeCmd := exec.Command("git", "update-index", "--assume-unchanged", filepath.Join("web", "sites", "default", "settings.ddev.php"))
+				assumeCmd.Dir = worktreePath
+				_ = assumeCmd.Run()
+				steps = append(steps, StepResult{
+					Description: "Updated settings.ddev.php",
+					Detail:      "DB host set to ddev-" + ddevName + "-db",
+				})
+			}
+		}
 	} else {
 		steps = append(steps, StepResult{
 			Description: "DDEV project name",
@@ -1143,6 +1164,29 @@ func createDDEVLocalConfig(worktreePath, ddevName string) error {
 	return nil
 }
 
+func updateSettingsDdevPHP(settingsPath, ddevName string) error {
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		return fmt.Errorf("could not read %s: %w", settingsPath, err)
+	}
+
+	content := string(data)
+
+	// Set $host to the new DDEV container name
+	hostRe := regexp.MustCompile(`\$host\s*=\s*["'].*?["']`)
+	newHost := `$host = "ddev-` + ddevName + `-db"`
+	if !hostRe.MatchString(content) {
+		return fmt.Errorf("could not find $host assignment in %s", settingsPath)
+	}
+	content = hostRe.ReplaceAllLiteralString(content, newHost)
+
+	err = os.WriteFile(settingsPath, []byte(content), 0644)
+	if err != nil {
+		return fmt.Errorf("could not write %s: %w", settingsPath, err)
+	}
+
+	return nil
+}
 
 func runCommandLive(dir, name string, args ...string) error {
 	cmd := exec.Command(name, args...)

@@ -518,6 +518,84 @@ func TestCreateDDEVLocalConfig(t *testing.T) {
   })
 }
 
+func TestUpdateSettingsDdevPHP(t *testing.T) {
+  t.Run("updates $host with single quotes", func(t *testing.T) {
+    dir := t.TempDir()
+    path := filepath.Join(dir, "settings.ddev.php")
+    content := `<?php
+$host = 'db';
+$database = 'db';
+`
+    if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+      t.Fatal(err)
+    }
+
+    err := updateSettingsDdevPHP(path, "0001-my-project")
+    if err != nil {
+      t.Fatalf("unexpected error: %v", err)
+    }
+
+    data, err := os.ReadFile(path)
+    if err != nil {
+      t.Fatal(err)
+    }
+    if !strings.Contains(string(data), `$host = "ddev-0001-my-project-db"`) {
+      t.Errorf("expected $host to be updated, got:\n%s", string(data))
+    }
+  })
+
+  t.Run("updates $host with double quotes", func(t *testing.T) {
+    dir := t.TempDir()
+    path := filepath.Join(dir, "settings.ddev.php")
+    content := `<?php
+$host = "ddev-original-db";
+$database = "db";
+`
+    if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+      t.Fatal(err)
+    }
+
+    err := updateSettingsDdevPHP(path, "t1-my-project")
+    if err != nil {
+      t.Fatalf("unexpected error: %v", err)
+    }
+
+    data, err := os.ReadFile(path)
+    if err != nil {
+      t.Fatal(err)
+    }
+    if !strings.Contains(string(data), `$host = "ddev-t1-my-project-db"`) {
+      t.Errorf("expected $host to be updated, got:\n%s", string(data))
+    }
+  })
+
+  t.Run("error when $host not found", func(t *testing.T) {
+    dir := t.TempDir()
+    path := filepath.Join(dir, "settings.ddev.php")
+    content := `<?php
+$database = "db";
+`
+    if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+      t.Fatal(err)
+    }
+
+    err := updateSettingsDdevPHP(path, "test")
+    if err == nil {
+      t.Fatal("expected error when $host not found")
+    }
+    if !strings.Contains(err.Error(), "could not find $host") {
+      t.Errorf("expected 'could not find $host' error, got: %v", err)
+    }
+  })
+
+  t.Run("error when file does not exist", func(t *testing.T) {
+    err := updateSettingsDdevPHP("/nonexistent/settings.ddev.php", "test")
+    if err == nil {
+      t.Fatal("expected error for nonexistent file")
+    }
+  })
+}
+
 func TestLinkProjectFiles(t *testing.T) {
   t.Run("drupal symlink created", func(t *testing.T) {
     projectRoot := t.TempDir()

@@ -94,7 +94,7 @@ If no DDEV config is found in any worktree, the DDEV steps are skipped entirely.
 
 **After creating the worktree and renaming DDEV (for non-default branches):**
 
-1. `.ddev/config.yaml` is marked as `assume-unchanged` so the name change is never committed
+1. The new DDEV project name is written to `.ddev/config.local.yaml` (which is not committed)
 2. For Drupal projects, `settings.ddev.php` is updated with the new database hostname (`ddev-<newname>-db`) and also marked as `assume-unchanged`
 3. `.ddev/traefik` is removed so DDEV regenerates its Traefik config for the new project name
 4. `ddev start` is run in the new worktree

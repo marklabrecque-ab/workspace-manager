@@ -120,6 +120,23 @@ func findProjectRoot() (string, error) {
 	return "", fmt.Errorf("could not find project root (no .bare or .git at %s)", projectRoot)
 }
 
+// deriveIdentifier generates a short identifier from a worktree name.
+// It takes the first 4 characters, but if that ends with a hyphen, it
+// uses a "0" prefix plus the first 3 characters instead
+// (e.g. "123-foo" → "0123" not "123-").
+func deriveIdentifier(worktreeName string) string {
+	var id string
+	if len(worktreeName) < 4 {
+		id = worktreeName
+	} else {
+		id = worktreeName[:4]
+	}
+	if strings.HasSuffix(id, "-") {
+		id = "0" + worktreeName[:3]
+	}
+	return id
+}
+
 // extractProjectName extracts the project name from a git remote URL.
 func extractProjectName(remoteURL string) string {
 	remoteURL = strings.TrimRight(remoteURL, "/")
@@ -374,6 +391,47 @@ func cleanupInit(projectDir string) {
 	fmt.Fprintf(os.Stderr, "Cleanup complete.\n")
 }
 
+type worktreeEntry struct {
+	path   string
+	branch string
+	isBare bool
+}
+
+// parseWorktreeList parses the output of `git worktree list --porcelain`
+// into a slice of worktreeEntry structs.
+func parseWorktreeList(output string) []worktreeEntry {
+	var entries []worktreeEntry
+	var current worktreeEntry
+	inEntry := false
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			if inEntry {
+				entries = append(entries, current)
+			}
+			current = worktreeEntry{path: strings.TrimPrefix(line, "worktree ")}
+			inEntry = true
+		} else if line == "bare" {
+			current.isBare = true
+		} else if strings.HasPrefix(line, "branch ") {
+			ref := strings.TrimPrefix(line, "branch ")
+			current.branch = strings.TrimPrefix(ref, "refs/heads/")
+		} else if line == "" {
+			if inEntry {
+				entries = append(entries, current)
+				current = worktreeEntry{}
+				inEntry = false
+			}
+		}
+	}
+	// Handle last entry if output doesn't end with a blank line
+	if inEntry {
+		entries = append(entries, current)
+	}
+
+	return entries
+}
+
 func cmdProjects() {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -426,34 +484,11 @@ func cmdProjects() {
 		}
 
 		var worktrees []worktreeInfo
-		var currentPath string
-		var currentBranch string
-		isBare := false
-
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.HasPrefix(line, "worktree ") {
-				currentPath = strings.TrimPrefix(line, "worktree ")
-				currentBranch = ""
-				isBare = false
-			} else if line == "bare" {
-				isBare = true
-			} else if strings.HasPrefix(line, "branch ") {
-				ref := strings.TrimPrefix(line, "branch ")
-				currentBranch = strings.TrimPrefix(ref, "refs/heads/")
-			} else if line == "" && currentPath != "" {
-				if !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
-					name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
-					worktrees = append(worktrees, worktreeInfo{name: name, branch: currentBranch})
-				}
-				currentPath = ""
-				currentBranch = ""
-				isBare = false
+		for _, entry := range parseWorktreeList(string(out)) {
+			if !entry.isBare && strings.HasPrefix(entry.path, spacesDir+string(filepath.Separator)) {
+				name := strings.TrimPrefix(entry.path, spacesDir+string(filepath.Separator))
+				worktrees = append(worktrees, worktreeInfo{name: name, branch: entry.branch})
 			}
-		}
-		// Handle last entry
-		if currentPath != "" && !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
-			name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
-			worktrees = append(worktrees, worktreeInfo{name: name, branch: currentBranch})
 		}
 
 		projects = append(projects, projectInfo{
@@ -523,42 +558,15 @@ func cmdList() {
 	}
 
 	var workspaces []workspace
-	var currentPath string
-	var currentBranch string
-	isBare := false
-
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "worktree ") {
-			currentPath = strings.TrimPrefix(line, "worktree ")
-			currentBranch = ""
-			isBare = false
-		} else if line == "bare" {
-			isBare = true
-		} else if strings.HasPrefix(line, "branch ") {
-			ref := strings.TrimPrefix(line, "branch ")
-			currentBranch = strings.TrimPrefix(ref, "refs/heads/")
-		} else if line == "" && currentPath != "" {
-			if !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
-				name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
-				workspaces = append(workspaces, workspace{
-					name:   name,
-					branch: currentBranch,
-					path:   currentPath,
-				})
-			}
-			currentPath = ""
-			currentBranch = ""
-			isBare = false
+	for _, entry := range parseWorktreeList(string(out)) {
+		if !entry.isBare && strings.HasPrefix(entry.path, spacesDir+string(filepath.Separator)) {
+			name := strings.TrimPrefix(entry.path, spacesDir+string(filepath.Separator))
+			workspaces = append(workspaces, workspace{
+				name:   name,
+				branch: entry.branch,
+				path:   entry.path,
+			})
 		}
-	}
-	// Handle last entry (porcelain output may not end with a blank line)
-	if currentPath != "" && !isBare && strings.HasPrefix(currentPath, spacesDir+string(filepath.Separator)) {
-		name := strings.TrimPrefix(currentPath, spacesDir+string(filepath.Separator))
-		workspaces = append(workspaces, workspace{
-			name:   name,
-			branch: currentBranch,
-			path:   currentPath,
-		})
 	}
 
 	if len(workspaces) == 0 {
@@ -583,19 +591,25 @@ func cmdList() {
 	}
 }
 
-func cmdNewFromArgs(args []string) {
+type newArgs struct {
+	worktreeName       string
+	identifier         string
+	baseBranch         string
+	identifierExplicit bool
+}
+
+// parseNewArgs parses the arguments for the "new" subcommand.
+func parseNewArgs(args []string) (newArgs, error) {
 	var baseBranch string
 	var positional []string
 
-	// Parse flags
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--base" {
 			if i+1 >= len(args) {
-				fmt.Fprintf(os.Stderr, "Error: --base requires a branch name\n")
-				os.Exit(1)
+				return newArgs{}, fmt.Errorf("--base requires a branch name")
 			}
 			baseBranch = args[i+1]
-			i++ // skip the value
+			i++
 		} else if strings.HasPrefix(args[i], "--base=") {
 			baseBranch = strings.TrimPrefix(args[i], "--base=")
 		} else {
@@ -604,30 +618,38 @@ func cmdNewFromArgs(args []string) {
 	}
 
 	if len(positional) < 1 || len(positional) > 2 {
-		fmt.Fprintf(os.Stderr, "Error: expected 1 or 2 positional arguments, got %d\n", len(positional))
-		fmt.Fprintf(os.Stderr, "Usage: workspace new [--base <branch>] <worktree-name> [identifier]\n")
-		os.Exit(1)
+		return newArgs{}, fmt.Errorf("expected 1 or 2 positional arguments, got %d", len(positional))
 	}
 
 	worktreeName := positional[0]
 	if worktreeName == "" {
-		fmt.Fprintf(os.Stderr, "Error: worktree name cannot be empty\n")
-		os.Exit(1)
+		return newArgs{}, fmt.Errorf("worktree name cannot be empty")
 	}
 
 	var identifier string
-	if len(positional) == 2 {
+	identifierExplicit := len(positional) == 2
+	if identifierExplicit {
 		identifier = positional[1]
 	} else {
-		if len(worktreeName) < 4 {
-			identifier = worktreeName
-		} else {
-			identifier = worktreeName[:4]
-		}
+		identifier = deriveIdentifier(worktreeName)
 	}
 
-	identifierExplicit := len(positional) == 2
-	cmdNew(worktreeName, identifier, baseBranch, identifierExplicit)
+	return newArgs{
+		worktreeName:       worktreeName,
+		identifier:         identifier,
+		baseBranch:         baseBranch,
+		identifierExplicit: identifierExplicit,
+	}, nil
+}
+
+func cmdNewFromArgs(args []string) {
+	parsed, err := parseNewArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Usage: workspace new [--base <branch>] <worktree-name> [identifier]\n")
+		os.Exit(1)
+	}
+	cmdNew(parsed.worktreeName, parsed.identifier, parsed.baseBranch, parsed.identifierExplicit)
 }
 
 func cmdNew(worktreeName, identifier, baseBranch string, identifierExplicit bool) {
@@ -1009,21 +1031,9 @@ func validateWorktree(targetPath, projectRoot string) (branch string, err error)
 		return "", fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
-	var currentWorktree string
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "worktree ") {
-			currentWorktree = strings.TrimPrefix(line, "worktree ")
-		}
-		// Skip bare repo entries
-		if line == "bare" {
-			currentWorktree = ""
-			continue
-		}
-		if strings.HasPrefix(line, "branch ") && currentWorktree == targetPath {
-			ref := strings.TrimPrefix(line, "branch ")
-			// Strip "refs/heads/" prefix to get the short branch name
-			branch = strings.TrimPrefix(ref, "refs/heads/")
-			return branch, nil
+	for _, entry := range parseWorktreeList(string(out)) {
+		if !entry.isBare && entry.path == targetPath {
+			return entry.branch, nil
 		}
 	}
 

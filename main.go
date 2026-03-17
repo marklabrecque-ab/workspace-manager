@@ -46,6 +46,8 @@ func main() {
 		cmdNewFromArgs(args[1:])
 	case "remove":
 		cmdRemove(args[1:])
+	case "refresh":
+		cmdRefresh(args[1:])
 	case "list", "ls":
 		cmdList()
 	case "projects":
@@ -80,6 +82,7 @@ Examples:
   workspace remove 0001-new-task     (remove by name)
   workspace remove                   (remove current directory's worktree)
   workspace list                     (list all workspaces)
+  workspace refresh [name]           (drop and reimport the database)
 `)
 }
 
@@ -867,6 +870,56 @@ func cmdNew(worktreeName, identifier, baseBranch string, identifierExplicit bool
 	// Done
 	fmt.Println()
 	printSummary(steps)
+}
+
+func cmdRefresh(args []string) {
+  projectRoot, err := findProjectRoot()
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+    os.Exit(1)
+  }
+
+  var targetPath string
+  if len(args) > 0 && args[0] != "" {
+    targetPath = filepath.Join(projectRoot, "spaces", args[0])
+  } else {
+    targetPath, err = os.Getwd()
+    if err != nil {
+      fmt.Fprintf(os.Stderr, "Error getting current directory: %v\n", err)
+      os.Exit(1)
+    }
+  }
+
+  targetPath, err = filepath.Abs(targetPath)
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Error resolving path: %v\n", err)
+    os.Exit(1)
+  }
+  targetPath, err = filepath.EvalSymlinks(targetPath)
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "Error resolving path: %v\n", err)
+    os.Exit(1)
+  }
+
+  if _, err := validateWorktree(targetPath, projectRoot); err != nil {
+    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+    os.Exit(1)
+  }
+
+  var steps []StepResult
+
+  dbDetail, err := handleDBImport(targetPath, projectRoot)
+  if err != nil {
+    fmt.Fprintf(os.Stderr, "\nError importing database: %v\n", err)
+    os.Exit(1)
+  }
+  steps = append(steps, StepResult{
+    Description: "Database",
+    Detail:      dbDetail,
+  })
+
+  fmt.Println()
+  printSummary(steps)
 }
 
 // findDDEVProjectName reads the DDEV project name from the main/master

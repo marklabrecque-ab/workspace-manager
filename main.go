@@ -315,6 +315,21 @@ func cmdInit(args []string) {
 		})
 	}
 
+	// Link Claude Code memory to share with project root
+	memDetail, memErr := linkClaudeMemory(worktreeFullPath, projectDir)
+	if memErr != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: failed to link Claude memory: %v\n", memErr)
+		steps = append(steps, StepResult{
+			Description: "Claude memory",
+			Detail:      "Failed: " + memErr.Error(),
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Claude memory",
+			Detail:      memDetail,
+		})
+	}
+
 	// Step 7: Check for DDEV and optionally set it up
 	ddevConfig := filepath.Join(worktreeFullPath, ".ddev", "config.yaml")
 	if _, err := os.Stat(ddevConfig); err == nil {
@@ -741,6 +756,21 @@ func cmdNew(worktreeName, identifier, baseBranch string, identifierExplicit bool
 	originalName, err := getDDEVProjectName(worktreePath)
 	hasDDEV := err == nil
 	projectType := getDDEVProjectType(worktreePath)
+
+	// Link Claude Code memory to share with project root (before potential early return)
+	memDetail, memErr := linkClaudeMemory(worktreePath, projectRoot)
+	if memErr != nil {
+		fmt.Fprintf(os.Stderr, "\nWarning: failed to link Claude memory: %v\n", memErr)
+		steps = append(steps, StepResult{
+			Description: "Claude memory",
+			Detail:      "Failed: " + memErr.Error(),
+		})
+	} else {
+		steps = append(steps, StepResult{
+			Description: "Claude memory",
+			Detail:      memDetail,
+		})
+	}
 
 	if !hasDDEV {
 		steps = append(steps, StepResult{
@@ -1358,6 +1388,85 @@ func linkProjectFiles(worktreePath, projectRoot string, projectType ProjectType)
 	}
 
 	return fmt.Sprintf("Linked %s → %s", dest, relPath), nil
+}
+
+// linkClaudeMemory creates a symlink so that a worktree shares Claude Code memory
+// with the project root. Claude stores project memory at ~/.claude/projects/<encoded-path>/memory/
+// where the encoded path replaces "/" with "-". This function symlinks the worktree's
+// memory directory to the project root's memory directory.
+func linkClaudeMemory(worktreePath, projectRoot string) (string, error) {
+  home, err := os.UserHomeDir()
+  if err != nil {
+    return "", fmt.Errorf("could not determine home directory: %w", err)
+  }
+
+  // Resolve to absolute paths
+  absWorktree, err := filepath.Abs(worktreePath)
+  if err != nil {
+    return "", fmt.Errorf("could not resolve worktree path: %w", err)
+  }
+  absRoot, err := filepath.Abs(projectRoot)
+  if err != nil {
+    return "", fmt.Errorf("could not resolve project root path: %w", err)
+  }
+
+  // Claude encodes paths by replacing "/" with "-"
+  encodePath := func(p string) string {
+    return strings.ReplaceAll(p, string(filepath.Separator), "-")
+  }
+
+  claudeProjectsDir := filepath.Join(home, ".claude", "projects")
+  rootMemoryDir := filepath.Join(claudeProjectsDir, encodePath(absRoot), "memory")
+  worktreeClaudeDir := filepath.Join(claudeProjectsDir, encodePath(absWorktree))
+  worktreeMemoryDir := filepath.Join(worktreeClaudeDir, "memory")
+
+  // Ensure the root memory directory exists
+  if err := os.MkdirAll(rootMemoryDir, 0700); err != nil {
+    return "", fmt.Errorf("could not create root memory directory: %w", err)
+  }
+
+  // Check if already the correct symlink
+  if target, err := os.Readlink(worktreeMemoryDir); err == nil {
+    absTarget := target
+    if !filepath.IsAbs(absTarget) {
+      absTarget = filepath.Join(filepath.Dir(worktreeMemoryDir), target)
+    }
+    absTarget, _ = filepath.Abs(absTarget)
+    absSource, _ := filepath.Abs(rootMemoryDir)
+    if absTarget == absSource {
+      return "Claude memory already linked", nil
+    }
+  }
+
+  // Remove existing memory dir/symlink if present
+  if info, err := os.Lstat(worktreeMemoryDir); err == nil {
+    if info.IsDir() {
+      if err := os.RemoveAll(worktreeMemoryDir); err != nil {
+        return "", fmt.Errorf("could not remove existing memory directory: %w", err)
+      }
+    } else {
+      if err := os.Remove(worktreeMemoryDir); err != nil {
+        return "", fmt.Errorf("could not remove existing memory path: %w", err)
+      }
+    }
+  }
+
+  // Ensure the worktree's Claude project directory exists
+  if err := os.MkdirAll(worktreeClaudeDir, 0700); err != nil {
+    return "", fmt.Errorf("could not create Claude project directory: %w", err)
+  }
+
+  // Compute relative path and create symlink
+  relPath, err := filepath.Rel(worktreeClaudeDir, rootMemoryDir)
+  if err != nil {
+    return "", fmt.Errorf("could not compute relative path: %w", err)
+  }
+
+  if err := os.Symlink(relPath, worktreeMemoryDir); err != nil {
+    return "", fmt.Errorf("could not create symlink: %w", err)
+  }
+
+  return fmt.Sprintf("Linked Claude memory → %s", rootMemoryDir), nil
 }
 
 func printSummary(steps []StepResult) {

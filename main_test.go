@@ -721,6 +721,92 @@ func TestLinkProjectFiles(t *testing.T) {
   })
 }
 
+func TestLinkClaudeMemory(t *testing.T) {
+  // Save and restore HOME
+  origHome := os.Getenv("HOME")
+  tmpHome := t.TempDir()
+  os.Setenv("HOME", tmpHome)
+  defer os.Setenv("HOME", origHome)
+
+  projectRoot := filepath.Join(t.TempDir(), "myproject")
+  worktree := filepath.Join(projectRoot, "spaces", "feature-x")
+  if err := os.MkdirAll(worktree, 0755); err != nil {
+    t.Fatal(err)
+  }
+
+  t.Run("creates symlink to root memory", func(t *testing.T) {
+    detail, err := linkClaudeMemory(worktree, projectRoot)
+    if err != nil {
+      t.Fatalf("unexpected error: %v", err)
+    }
+    if !strings.Contains(detail, "Linked Claude memory") {
+      t.Errorf("expected 'Linked Claude memory', got %q", detail)
+    }
+
+    // Verify the symlink exists and points to the right place
+    encodePath := func(p string) string {
+      return strings.ReplaceAll(p, string(filepath.Separator), "-")
+    }
+    absRoot, _ := filepath.Abs(projectRoot)
+    absWorktree, _ := filepath.Abs(worktree)
+    claudeDir := filepath.Join(tmpHome, ".claude", "projects")
+    worktreeMemory := filepath.Join(claudeDir, encodePath(absWorktree), "memory")
+    rootMemory := filepath.Join(claudeDir, encodePath(absRoot), "memory")
+
+    target, err := os.Readlink(worktreeMemory)
+    if err != nil {
+      t.Fatalf("expected symlink at %s: %v", worktreeMemory, err)
+    }
+
+    // Resolve the relative symlink to absolute
+    absTarget := filepath.Join(filepath.Dir(worktreeMemory), target)
+    absTarget, _ = filepath.Abs(absTarget)
+    absRootMemory, _ := filepath.Abs(rootMemory)
+    if absTarget != absRootMemory {
+      t.Errorf("symlink target %q doesn't match root memory %q", absTarget, absRootMemory)
+    }
+  })
+
+  t.Run("idempotent when already linked", func(t *testing.T) {
+    detail, err := linkClaudeMemory(worktree, projectRoot)
+    if err != nil {
+      t.Fatalf("unexpected error: %v", err)
+    }
+    if detail != "Claude memory already linked" {
+      t.Errorf("expected 'Claude memory already linked', got %q", detail)
+    }
+  })
+
+  t.Run("replaces existing directory with symlink", func(t *testing.T) {
+    // Remove the symlink and create a real directory instead
+    encodePath := func(p string) string {
+      return strings.ReplaceAll(p, string(filepath.Separator), "-")
+    }
+    absWorktree, _ := filepath.Abs(worktree)
+    claudeDir := filepath.Join(tmpHome, ".claude", "projects")
+    worktreeMemory := filepath.Join(claudeDir, encodePath(absWorktree), "memory")
+
+    os.Remove(worktreeMemory)
+    if err := os.MkdirAll(worktreeMemory, 0755); err != nil {
+      t.Fatal(err)
+    }
+
+    detail, err := linkClaudeMemory(worktree, projectRoot)
+    if err != nil {
+      t.Fatalf("unexpected error: %v", err)
+    }
+    if !strings.Contains(detail, "Linked Claude memory") {
+      t.Errorf("expected 'Linked Claude memory', got %q", detail)
+    }
+
+    // Verify it's now a symlink
+    _, err = os.Readlink(worktreeMemory)
+    if err != nil {
+      t.Fatalf("expected symlink at %s: %v", worktreeMemory, err)
+    }
+  })
+}
+
 func TestPrintSummary(t *testing.T) {
   // Capture stdout
   oldStdout := os.Stdout
